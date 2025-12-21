@@ -125,9 +125,133 @@ ac_reason_embeddings_rectified_flow_2b_256_320 = LazyDict(
     flags={"allow_objects": True},
 )
 
+"""
+torchrun --nproc_per_node=1 --master_port=12341 -m scripts.train \\
+  --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config.py \\
+  -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320_grpo
+"""
+ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
+    dict(
+        defaults=[
+            DEFAULT_CHECKPOINT.experiment,
+            # NOTE: GRPO 版本的模型配置组（由 action_conditioned/configs/action_conditioned/model.py 注册）
+            {"override /model": "action_conditioned_video2world_fsdp_rectified_flow_grpo"},
+            {"override /net": "cosmos_v1_2B_action_conditioned"},
+            {"override /conditioner": "action_conditioned_video_conditioner"},
+            {"override /data_train": "bridge_13frame_480_640_train"},
+            {"override /data_val": "bridge_13frame_480_640_val"},
+            "_self_",
+        ],
+        job=dict(
+            project="cosmos_predict2_action_conditioned",
+            group="cosmos_predict_v2p5",
+            name="2b_bridge_action_conditioned_grpo",
+        ),
+        optimizer=dict(
+            lr=2 ** (-14.5),
+            weight_decay=0.1,
+        ),
+        checkpoint=dict(
+            save_iter=2_000,
+            # pyrefly: ignore  # missing-attribute
+            load_path=get_checkpoint_path(DEFAULT_CHECKPOINT.s3.uri),
+            load_training_state=False,
+            strict_resume=False,
+            load_from_object_store=dict(
+                enabled=False,
+            ),
+            save_to_object_store=dict(
+                enabled=False,
+            ),
+        ),
+        trainer=dict(
+            straggler_detection=dict(enabled=False),
+            # NOTE: GRPO 训练通常更慢；可以视情况把采样 callback 频率调低
+            callbacks=dict(
+                every_n_sample_reg=dict(
+                    every_n=10_000,
+                    do_x0_prediction=False,
+                    guidance=[0, 3, 7],
+                    fps=16,
+                    save_s3=False,
+                ),
+                every_n_sample_ema=dict(
+                    every_n=10_000,
+                    do_x0_prediction=False,
+                    guidance=[0, 3, 7],
+                    fps=16,
+                    save_s3=False,
+                ),
+                heart_beat=dict(
+                    save_s3=False,
+                ),
+                iter_speed=dict(
+                    hit_thres=100,
+                    save_s3=False,
+                ),
+                device_monitor=dict(
+                    save_s3=False,
+                ),
+                wandb=dict(
+                    save_s3=False,
+                ),
+                wandb_10x=dict(
+                    save_s3=False,
+                ),
+                dataloader_speed=dict(
+                    save_s3=False,
+                ),
+            ),
+        ),
+        model_parallel=dict(
+            context_parallel_size=1,
+        ),
+        model=dict(
+            config=dict(
+                # ---------------- action-conditioned base config ----------------
+                min_num_conditional_frames=1,
+                max_num_conditional_frames=1,
+                conditional_frames_probs=None,
+                state_t=1 + 12 // 4,
+                net=dict(
+                    action_dim=7,
+                    num_action_per_chunk=12,
+                ),
+                # ---------------- GRPO hyperparameters (placeholders) ----------------
+                # NOTE: 这些字段由 GRPO 模型的 Config 定义；在 dummy reward 阶段先给一个可跑通的默认值。
+                grpo=dict(
+                    num_steps=16,
+                    shift=5.0,
+                    eta=0.0,
+                    guidance=3.0,
+                    seed=1,
+                    use_group_adv=True,
+                    num_generations=4,
+                    timestep_fraction=1.0,
+                    clip_range=1e-4,
+                    adv_clip_max=5.0,
+                ),
+                reward=dict(
+                    # NOTE: reward model 还未定稿，先用 dummy reward 打通链路
+                    type="dummy",
+                ),
+            ),
+        ),
+        dataloader_train=dict(
+            # NOTE: GRPO online rollout 非常吃算力，先用更小 batch 打通
+            batch_size=1,
+            sampler=dict(
+                dataset=dict(fps_downsample_ratio=1, video_size=[256, 320]),
+            ),
+            dataset=dict(fps_downsample_ratio=1, video_size=[256, 320]),
+        ),
+    ),
+    flags={"allow_objects": True},
+)
+
 cs = ConfigStore.instance()
 
-for _item in [ac_reason_embeddings_rectified_flow_2b_256_320]:
+for _item in [ac_reason_embeddings_rectified_flow_2b_256_320, ac_reason_embeddings_rectified_flow_2b_256_320_grpo]:
     # Get the experiment name from the global variable
     experiment_name = [name.lower() for name, value in globals().items() if value is _item][0]  # noqa: RUF015
 

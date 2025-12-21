@@ -24,6 +24,10 @@ from cosmos_predict2._src.predict2.action.models.action_conditioned_video2world_
     ActionVideo2WorldModelRectifiedFlow,
     Video2WorldModelRectifiedFlowConfig,
 )
+from cosmos_predict2._src.predict2.action.models.action_conditioned_video2world_rectified_flow_grpo_model import (
+    ActionVideo2WorldModelRectifiedFlowGRPO,
+    ActionVideo2WorldModelRectifiedFlowGRPOConfig,
+)
 
 # EDM model
 DDP_CONFIG = dict(
@@ -62,6 +66,36 @@ FSDP_RECTIFIED_FLOW_CONFIG = dict(
     ),
 )
 
+# rectified flow model (GRPO)
+FSDP_RECTIFIED_FLOW_GRPO_CONFIG = dict(
+    trainer=dict(
+        distributed_parallelism="fsdp",
+    ),
+    model=L(ActionVideo2WorldModelRectifiedFlowGRPO)(
+        config=ActionVideo2WorldModelRectifiedFlowGRPOConfig(
+            fsdp_shard_size=8,
+            state_t=24,
+            # NOTE: 默认值仅用于保证可实例化；实验配置会覆盖 `model.config.grpo/reward`
+            grpo=dict(
+                num_steps=16,
+                shift=5.0,
+                eta=0.0,
+                guidance=3.0,
+                seed=1,
+                timestep_fraction=1.0,
+                use_group_adv=True,
+                num_generations=4,
+                adv_clip_max=5.0,
+                clip_range=1e-4,
+            ),
+            reward=dict(
+                type="dummy",
+            ),
+        ),
+        _recursive_=False,
+    ),
+)
+
 
 def register_model():
     cs = ConfigStore.instance()
@@ -72,4 +106,10 @@ def register_model():
         package="_global_",
         name="action_conditioned_video2world_fsdp_rectified_flow",
         node=FSDP_RECTIFIED_FLOW_CONFIG,
+    )
+    cs.store(
+        group="model",
+        package="_global_",
+        name="action_conditioned_video2world_fsdp_rectified_flow_grpo",
+        node=FSDP_RECTIFIED_FLOW_GRPO_CONFIG,
     )
