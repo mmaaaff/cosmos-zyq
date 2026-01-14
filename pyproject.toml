@@ -68,6 +68,10 @@ conflicts = [
 ]
 override-dependencies = ["numpy>=2.0.0"]
 
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default=true
+
 [tool.uv.workspace]
 members = ["packages/*"]
 

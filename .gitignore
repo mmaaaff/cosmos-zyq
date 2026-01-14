@@ -197,10 +197,12 @@ cython_debug/
 
 /checkpoints/
 /datasets/
+/cosmos_predict2/datasets/
 /output/
 /outputs/
 /results/
 /tmp/
+/ckpt/
 
 !assets/**/*.png
 !assets/**/*.jpg

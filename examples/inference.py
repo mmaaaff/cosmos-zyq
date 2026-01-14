@@ -32,13 +32,13 @@ from cosmos_predict2.config import (
 
 
 class Args(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid", frozen=True)
+    model_config = pydantic.ConfigDict(extra="forbid", frozen=True)  # extra="forbid"：命令行里如果多给了未定义的参数，会报错
 
     input_files: Annotated[list[Path], tyro.conf.arg(aliases=("-i",))]
     """Path to the inference parameter file(s).
     If multiple files are provided, the model will be loaded once and all the samples will be run sequentially.
     """
-    setup: SetupArguments
+    setup: SetupArguments  # 这里面定义了一堆参数
     """Setup arguments. These can only be provided via CLI."""
     overrides: InferenceOverrides
     """Inference parameter overrides. These can either be provided in the input json file or via CLI. CLI overrides will overwrite the values in the input file."""
@@ -64,7 +64,7 @@ if __name__ == "__main__":
             Args,
             description=__doc__,
             console_outputs=is_rank0(),
-            config=(tyro.conf.OmitArgPrefixes,),
+            config=(tyro.conf.OmitArgPrefixes,),  # 允许命令行不写前缀，于是 "setup." 可以省略，大部分参数由这里暴露出
         )
     except Exception as e:
         handle_tyro_exception(e)

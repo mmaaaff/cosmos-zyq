@@ -19,6 +19,7 @@ class DummyRewardModel(BaseRewardModel):
     """
 
     def forward(self, inp: RewardInput) -> torch.Tensor:
+        print(RewardInput)
         # Prefer deriving batch size from `video` if present; otherwise fall back to action/text.
         if inp.video is not None:
             batch_size = inp.video.shape[0]

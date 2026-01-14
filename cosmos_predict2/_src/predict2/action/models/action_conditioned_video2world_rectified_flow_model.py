@@ -75,10 +75,10 @@ class ActionVideo2WorldModelRectifiedFlow(Text2WorldModelRectifiedFlow):
             num_conditional_frames=data_batch.get(NUM_CONDITIONAL_FRAMES_KEY, None),
             conditional_frames_probs=self.config.conditional_frames_probs,
         )
-        return raw_state, latent_state, condition
+        return raw_state, latent_state, condition  # 分别是原始像素域输入、tokenizer/VAE 编码后的 latent、父类返回的 condition 基础上添上视频条件帧与 mask
 
     @torch.no_grad()
-    def generate_samples_with_latents_from_batch(
+    def generate_samples_with_latents_from_batch(  # 做一次推理采样（Rectified Flow + UniPC scheduler），并且在指定 query_steps 把中间 latents 保存下来；注意，输入一个 batch，只处理第一个样本
         self,
         data_batch: Dict,
         guidance: float = 1.5,
@@ -103,13 +103,13 @@ class ActionVideo2WorldModelRectifiedFlow(Text2WorldModelRectifiedFlow):
             is_negative_prompt (bool): use negative prompt t5 in uncondition if true
             num_steps (int): number of steps for the diffusion process
         """
-        self._normalize_video_databatch_inplace(data_batch)
-        self._augment_image_dim_inplace(data_batch)
-        is_image_batch = self.is_image_batch(data_batch)
+        self._normalize_video_databatch_inplace(data_batch)  # 把 uint8 视频归一化到 [-1,1]
+        self._augment_image_dim_inplace(data_batch)  # 把 image [B,C,H,W] 变成 [B,C,1,H,W]
+        is_image_batch = self.is_image_batch(data_batch)  # 判断是图像还是视频 batch
         input_key = self.input_image_key if is_image_batch else self.input_data_key
         if n_sample is None:
             n_sample = data_batch[input_key].shape[0]
-        if state_shape is None:
+        if state_shape is None:  # 推导 latent 空间形状 state_shap
             _T, _H, _W = data_batch[input_key].shape[-3:]
             state_shape = [
                 self.config.state_ch,
@@ -118,7 +118,7 @@ class ActionVideo2WorldModelRectifiedFlow(Text2WorldModelRectifiedFlow):
                 _W // self.tokenizer.spatial_compression_factor,
             ]
 
-        noise = misc.arch_invariant_rand(
+        noise = misc.arch_invariant_rand(  # 生成初始噪声 noise，arch_invariant_rand 标是跨硬件/实现尽可能一致的随机数
             (n_sample,) + tuple(state_shape),
             torch.float32,
             self.tensor_kwargs["device"],
@@ -139,7 +139,7 @@ class ActionVideo2WorldModelRectifiedFlow(Text2WorldModelRectifiedFlow):
 
         velocity_fn = self.get_velocity_fn_from_batch(data_batch, guidance, is_negative_prompt=is_negative_prompt)
         if self.net.is_context_parallel_enabled:
-            noise = broadcast_split_tensor(tensor=noise, seq_dim=2, process_group=self.get_context_parallel_group())
+            noise = broadcast_split_tensor(tensor=noise, seq_dim=2, process_group=self.get_context_parallel_group())  # 把时间维 T 切到不同 rank 上
         latents = noise
 
         latent_to_save = {}
@@ -156,12 +156,12 @@ class ActionVideo2WorldModelRectifiedFlow(Text2WorldModelRectifiedFlow):
             latent_model_input = latents
             timestep = [t]
 
-            timestep = torch.stack(timestep)
+            timestep = torch.stack(timestep)  # shape: [1]
 
-            velocity_pred = velocity_fn(noise, latent_model_input, timestep.unsqueeze(0))
+            velocity_pred = velocity_fn(noise, latent_model_input, timestep.unsqueeze(0))  # timestep.unsqueeze(0) shape: [1,1]
             temp_x0 = self.sample_scheduler.step(
                 velocity_pred.unsqueeze(0), t, latents[0].unsqueeze(0), return_dict=False, generator=seed_g
-            )[0]
+            )[0]  # 只取 batch 中第 0 个样本进行 step
             latents = temp_x0.squeeze(0)
 
         latent_to_save[num_step] = latents
@@ -169,11 +169,11 @@ class ActionVideo2WorldModelRectifiedFlow(Text2WorldModelRectifiedFlow):
         if self.net.is_context_parallel_enabled:
             latents = cat_outputs_cp(latents, seq_dim=2, cp_group=self.get_context_parallel_group())
 
-        return latents, latent_to_save
+        return latents, latent_to_save  # 分别是最终采样得到的 latents 以及所选中间步的 latents 字典
 
-    def denoise(
+    def denoise(  # 预测 x_t 处 velocity
         self,
-        noise: torch.Tensor,
+        noise: torch.Tensor,  # 之所以要输入 noise 是因为，前面几帧是条件，所以每一个 denoise step，都要把前面几帧的预测值替换为根据条件帧和 noise 计算出的 gt velocity
         xt_B_C_T_H_W: torch.Tensor,
         timesteps_B_T: torch.Tensor,
         condition: Text2WorldCondition,
@@ -198,22 +198,24 @@ class ActionVideo2WorldModelRectifiedFlow(Text2WorldModelRectifiedFlow):
                 xt_B_C_T_H_W
             )
 
-            # Make the first few frames of x_t be the ground truth frames
+            # Make the first few frames of x_t be the ground truth frames（这里处理输入，把输入的前几帧替换为 gt 条件帧）
             xt_B_C_T_H_W = condition_state_in_B_C_T_H_W * condition_video_mask + xt_B_C_T_H_W * (
                 1 - condition_video_mask
             )
 
         # forward pass through the network
+        # print(f"in denoise, dtype of xt_B_C_T_H_W: {xt_B_C_T_H_W.to(**self.tensor_kwargs).dtype}, dtype of timesteps_B_T: {timesteps_B_T.dtype}")
+        # print(f"in denoise, shape of xt_B_C_T_H_W: {xt_B_C_T_H_W.to(**self.tensor_kwargs).shape}, shape of timesteps_B_T: {timesteps_B_T.shape}, shape of condition: {[t.shape for t in condition.to_dict().values() if type(t) == torch.Tensor]}")
         net_output_B_C_T_H_W = self.net(
-            x_B_C_T_H_W=xt_B_C_T_H_W.to(**self.tensor_kwargs),  # Eq. 7 of https://arxiv.org/pdf/2206.00364.pdf
+            x_B_C_T_H_W=xt_B_C_T_H_W.to(**self.tensor_kwargs),  # Eq. 7 of https://arxiv.org/pdf/2206.00364.pdf (EDM 中的 c_skip, c_in, c_out)
             timesteps_B_T=timesteps_B_T,  # Eq. 7 of https://arxiv.org/pdf/2206.00364.pdf
             **condition.to_dict(),
         ).float()
 
-        if condition.is_video and self.config.denoise_replace_gt_frames:
+        if condition.is_video and self.config.denoise_replace_gt_frames:  # 应该是对应没有使用 latent 的情况？这种情况条件就是 video
             gt_frames_x0 = condition.gt_frames.type_as(net_output_B_C_T_H_W)
             gt_frames_velocity = noise - gt_frames_x0
-            net_output_B_C_T_H_W = gt_frames_velocity * condition_video_mask + net_output_B_C_T_H_W * (
+            net_output_B_C_T_H_W = gt_frames_velocity * condition_video_mask + net_output_B_C_T_H_W * (  # 这里处理输出，把前面几帧替换为 gt velocity
                 1 - condition_video_mask
             )
 

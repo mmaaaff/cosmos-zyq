@@ -119,7 +119,7 @@ class Video2WorldCondition(Text2WorldCondition):
             condition_video_input_mask_B_C_T_H_W[idx, :, : num_conditional_frames_B[idx], :, :] += 1
 
         kwargs["condition_video_input_mask_B_C_T_H_W"] = condition_video_input_mask_B_C_T_H_W
-        return type(self)(**kwargs)
+        return type(self)(**kwargs)  # * 因为 @dataclass(frozen=True) 导致类不可变，所以采用拷贝-更新的方式去更新，构造并返回一个“同类型的新实例”，更新其 "condition_video_input_mask_B_C_T_H_W" 属性
 
     def edit_for_inference(
         self, is_cfg_conditional: bool = True, num_conditional_frames: int = 1

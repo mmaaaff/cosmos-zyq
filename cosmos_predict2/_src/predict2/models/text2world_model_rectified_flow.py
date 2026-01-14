@@ -352,11 +352,16 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
         """
         self._update_train_stats(data_batch)
 
+        # print(f'keys in data_batch: {data_batch.keys()}')
+        # print(f't5_text_embeddings shape: {data_batch["t5_text_embeddings"].shape}')
+        # print(f't5_text_mask shape: {data_batch["t5_text_mask"].shape}')
         # Obtain text embeddings online
         if self.config.text_encoder_config is not None and self.config.text_encoder_config.compute_online:
             text_embeddings = self.text_encoder.compute_text_embeddings_online(data_batch, self.input_caption_key)
             data_batch["t5_text_embeddings"] = text_embeddings
             data_batch["t5_text_mask"] = torch.ones(text_embeddings.shape[0], text_embeddings.shape[1], device="cuda")
+        # print(f't5_text_embeddings shape after: {data_batch["t5_text_embeddings"].shape}')
+        # print(f't5_text_mask shape after: {data_batch["t5_text_mask"].shape}')
 
         # Get the input data to noise and denoise~(image, video) and the corresponding conditioner.
         _, x0_B_C_T_H_W, condition = self.get_data_and_condition(data_batch)
@@ -399,9 +404,9 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
         xt_B_C_T_H_W, vt_B_C_T_H_W = self.rectified_flow.get_interpolation(epsilon_B_C_T_H_W, x0_B_C_T_H_W, sigmas)
 
         vt_pred_B_C_T_H_W = self.denoise(
-            noise=epsilon_B_C_T_H_W,
-            xt_B_C_T_H_W=xt_B_C_T_H_W.to(**self.tensor_kwargs),
-            timesteps_B_T=timesteps,
+            noise=epsilon_B_C_T_H_W,  # torch.float32
+            xt_B_C_T_H_W=xt_B_C_T_H_W.to(**self.tensor_kwargs),  # torch.float32
+            timesteps_B_T=timesteps,  # torch.float32
             condition=condition,
         )
 
@@ -463,7 +468,7 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
 
     # ------------------------ Sampling ------------------------
 
-    def get_velocity_fn_from_batch(
+    def get_velocity_fn_from_batch(  # NOTE
         self,
         data_batch: Dict,
         guidance: float = 1.5,
@@ -686,7 +691,7 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
     def forward(self, xt, t, condition: Text2WorldCondition):
         pass
 
-    def get_data_and_condition(self, data_batch: dict[str, torch.Tensor]) -> Tuple[Tensor, Tensor, Text2WorldCondition]:
+    def get_data_and_condition(self, data_batch: dict[str, torch.Tensor]) -> Tuple[Tensor, Tensor, Text2WorldCondition]:  # NOTE
         self._normalize_video_databatch_inplace(data_batch)
         self._augment_image_dim_inplace(data_batch)
         is_image_batch = self.is_image_batch(data_batch)
@@ -833,7 +838,7 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
         )
         return is_image
 
-    def denoise(
+    def denoise(  # NOTE
         self,
         noise: torch.Tensor,
         xt_B_C_T_H_W: torch.Tensor,

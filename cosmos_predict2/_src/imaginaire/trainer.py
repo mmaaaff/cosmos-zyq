@@ -351,3 +351,249 @@ class ImaginaireTrainer:
                 output_batch, loss = model.validation_step(data_batch, iteration)
                 self.callbacks.on_validation_step_end(model, data_batch, output_batch, loss, iteration=iteration)
         self.callbacks.on_validation_end(model, iteration=iteration)
+
+
+class trainer_grpo(ImaginaireTrainer):
+    """
+    GRPO trainer.
+
+    Key difference from `ImaginaireTrainer`:
+    - Outer loop collects a rollout batch once.
+    - Inner loop performs multiple optimizer updates on the *same* rollout batch, so `old_log_probs` stay fixed and
+      `new_log_probs` change across updates (matching DanceGRPO semantics).
+
+    Annotation:
+    - This trainer expects the model to implement:
+        - `collect_rollout_and_rewards(data_batch) -> GrpoRolloutSamples`
+        - `compute_grpo_loss(samples, update_seed) -> (output_batch, loss)`
+    """
+
+    def _concat_batches(self, batches: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
+        """
+        Concatenate a list of data_batch dicts along dim=0.
+
+        Annotation:
+        - For tensors with a batch dimension, we concatenate on dim=0.
+        - For lists/tuples, we concatenate by addition.
+        - For other types, we keep the last value.
+        """
+
+        assert len(batches) > 0
+        out: dict[str, torch.Tensor] = {}
+        keys = set().union(*[b.keys() for b in batches])
+        for k in keys:
+            vals = [b[k] for b in batches if k in b]
+            v0 = vals[0]
+            if torch.is_tensor(v0):
+                out[k] = torch.cat([v for v in vals], dim=0)
+            elif isinstance(v0, list):
+                merged = []
+                for v in vals:
+                    merged.extend(v)
+                out[k] = merged  # type: ignore[assignment]
+            elif isinstance(v0, tuple):
+                merged_t = []
+                for v in vals:
+                    merged_t.extend(list(v))
+                out[k] = tuple(merged_t)  # type: ignore[assignment]
+            else:
+                out[k] = v0  # type: ignore[assignment]
+        return out
+
+    def train(
+        self,
+        model: ImaginaireModel,
+        dataloader_train: torch.utils.data.DataLoader,
+        dataloader_val: torch.utils.data.DataLoader,
+    ) -> None:
+        # Same initialization as base trainer
+        model = model.to("cuda", memory_format=self.config.trainer.memory_format)  # type: ignore
+        model.on_train_start(self.config.trainer.memory_format)
+
+        self.callbacks.on_optimizer_init_start()
+        optimizer, scheduler = model.init_optimizer_scheduler(self.config.optimizer, self.config.scheduler)
+        grad_scaler = torch.amp.GradScaler("cuda", **self.config.trainer.grad_scaler_args)
+        self.callbacks.on_optimizer_init_end()
+
+        iteration = self.checkpointer.load(model, optimizer, scheduler, grad_scaler)
+        grad_accum_iter = 0
+        log.critical(f"Distributed parallelism mode: {self.config.trainer.distributed_parallelism}")
+
+        if self.config.trainer.distributed_parallelism == "ddp":
+            model_ddp = distributed.parallel_model_wrapper(self.config.trainer.ddp, model)
+        elif self.config.trainer.distributed_parallelism == "fsdp":
+            model_ddp = model
+        else:
+            raise ValueError(f"Unknown distributed parallelism mode: {self.config.trainer.distributed_parallelism}")
+
+        log.info("Starting GRPO training...")
+        self.callbacks.on_train_start(model, iteration=iteration)
+
+        _end_training = False
+        with (
+            maybe_enable_profiling(self.config, global_step=iteration) as torch_profiler,
+            maybe_enable_memory_snapshot(self.config, global_step=iteration) as memory_profiler,
+        ):
+            dataloader_train_iter = iter(dataloader_train)
+            while True:
+                if iteration >= self.config.trainer.max_iter:
+                    break
+                
+                print("New Rollout")
+
+                # -------------------- Outer loop: collect rollout batch --------------------
+                # NOTE: `rollout_num_batches` is stored in model.config.grpo (dict) for simplicity.
+                rollout_num_batches = int(getattr(getattr(model, "config", None), "grpo", {}).get("rollout_num_batches", 1))  # type: ignore[union-attr]
+                rollout_batches = []
+                for _ in range(max(1, rollout_num_batches)):
+                    try:
+                        data_batch = next(dataloader_train_iter)
+                    except StopIteration:
+                        dataloader_train_iter = iter(dataloader_train)
+                        data_batch = next(dataloader_train_iter)
+                    rollout_batches.append(data_batch)
+
+                # Move to cuda and concat into a larger rollout batch
+                rollout_batches = [misc.to(b, device="cuda") for b in rollout_batches]
+                rollout_batch = self._concat_batches(rollout_batches)
+
+                # Rollout should be deterministic w.r.t. policy noise; prefer eval mode for rollout
+                model_ddp.eval()
+                if self.config.trainer.distributed_parallelism == "ddp":
+                    model_ddp.module.eval()
+
+                self.callbacks.on_training_step_start(model, rollout_batch, iteration=iteration)
+
+                with torch.no_grad():
+                    # 逐 batch 收集 rollout 样本并保存为一个列表
+                    samples_list = []
+                    for batch_idx, b in enumerate(rollout_batches):
+                        print("new rollout batch")
+                        samples_list.append(
+                            model_ddp.collect_rollout_and_rewards(  # 每次设置不同的 seed 避免使用同样的初始 noise
+                                b, rollout_seed_offset=iteration * 1000 + batch_idx
+                            )
+                        )
+
+                # -------------------- Inner loop: multiple updates on same rollout --------------------
+                num_updates = int(getattr(getattr(model, "config", None), "grpo", {}).get("num_updates", 1))  # type: ignore[union-attr]
+                num_updates = max(1, num_updates)
+
+
+                # 目前是按照 rollout 阶段未打乱的 batch 进行更新，后续可以考虑按照打乱后的 batch 进行更新
+                for update_idx in range(num_updates):
+                    print(f"update_idx = {update_idx}")
+                    # Switch to train mode for policy update
+                    model_ddp.train()
+                    if self.config.trainer.distributed_parallelism == "ddp":
+                        model_ddp.module.train()
+
+                    total_b = sum(int(s.rewards.shape[0]) for s in samples_list)  # 总样本数
+                    total_b = max(1, total_b)
+
+                    output_batch_accum: dict[str, torch.Tensor] = {}
+                    last_loss: torch.Tensor | None = None
+
+                    for batch_idx, s in enumerate(samples_list):
+                        print(f'batch_idx = {batch_idx}')
+                        w = float(int(s.rewards.shape[0])) / float(total_b)  # 本批次权重
+
+                        # DDP 只在 accume 到最后要更新的那一步的时候才同步梯度
+                        sync_grad = grad_accum_iter == self.config.trainer.grad_accum_iter - 1
+                        with distributed.ddp_sync_grad(model_ddp, sync_grad):
+                            self.callbacks.on_before_forward(iteration=iteration)
+                            out_i, loss_i = model_ddp.compute_grpo_loss(  # type: ignore[attr-defined]
+                                s, update_seed=iteration * 100000 + update_idx * 1000 + batch_idx
+                            )
+                            self.callbacks.on_after_forward(iteration=iteration)
+
+                            # Weight the micro loss and normalize by grad_accum_iter
+                            loss_micro = loss_i * w
+                            last_loss = loss_micro
+
+                            self.callbacks.on_before_backward(model_ddp, loss_micro, iteration=iteration)
+                            loss_scaled = grad_scaler.scale(loss_micro / self.config.trainer.grad_accum_iter)
+                            loss_scaled.backward()
+                            if self.config.trainer.distributed_parallelism == "ddp":
+                                model_ddp.module.on_after_backward()
+                            else:
+                                model_ddp.on_after_backward()
+                            self.callbacks.on_after_backward(model_ddp, iteration=iteration)
+
+                        # 标量加权平均，tensor 拼接
+                        b_i = int(s.rewards.shape[0])
+                        for k, v in out_i.items():
+                            if torch.is_tensor(v):
+                                if v.ndim == 0:
+                                    output_batch_accum[k] = output_batch_accum.get(k, torch.zeros_like(v)) + v.detach() * w
+                                elif v.ndim >= 1 and v.shape[0] == b_i:
+                                    if k not in output_batch_accum:
+                                        output_batch_accum[k] = v.detach()
+                                    else:
+                                        output_batch_accum[k] = torch.cat([output_batch_accum[k], v.detach()], dim=0)
+                                else:
+                                    # Shape is not batch-aligned
+                                    # output_batch_accum[k] = v.detach()
+                                    raise ValueError(f"Shape is not batch-aligned: {v.shape} for key {k}")
+                            else:
+                                # Non-tensor (e.g., a condition object)
+                                raise ValueError(f"Non-tensor: {type(v)} for key {k}")
+
+                        grad_accum_iter += 1
+
+                        if grad_accum_iter == self.config.trainer.grad_accum_iter:
+                            self.callbacks.on_before_optimizer_step(
+                                model_ddp, optimizer, scheduler, grad_scaler, iteration=iteration
+                            )
+                            grad_scaler.step(optimizer)
+                            grad_scaler.update()
+                            scheduler.step()
+
+                            self.callbacks.on_before_zero_grad(model_ddp, optimizer, scheduler, iteration=iteration)
+                            if self.config.trainer.distributed_parallelism == "ddp":
+                                model_ddp.module.on_before_zero_grad(optimizer, scheduler, iteration=iteration)
+                            else:
+                                model_ddp.on_before_zero_grad(optimizer, scheduler, iteration=iteration)
+                            optimizer.zero_grad(set_to_none=True)
+                            grad_accum_iter = 0
+
+                            # Treat each optimizer step as an iteration
+                            iteration += 1
+                            # For callback signatures, pass the (weighted) output_batch stats; loss is the last micro loss.
+                            if last_loss is None:
+                                last_loss = torch.zeros((), device="cuda")
+                            self.callbacks.on_training_step_batch_end(
+                                model, rollout_batch, output_batch_accum, last_loss, iteration=iteration
+                            )
+                            self.callbacks.on_training_step_end(
+                                model, rollout_batch, output_batch_accum, last_loss, iteration=iteration
+                            )
+
+                            if iteration % self.config.checkpoint.save_iter == 0:
+                                self.checkpointer.save(model, optimizer, scheduler, grad_scaler, iteration=iteration)
+
+                            if torch_profiler:
+                                torch_profiler.step()
+                            if memory_profiler:
+                                memory_profiler.step()
+
+                            if iteration >= self.config.trainer.max_iter:
+                                _end_training = True
+                                break
+                            
+                            output_batch_accum = {}
+                            last_loss = None
+
+                    if _end_training:
+                        break
+
+                if _end_training:
+                    break
+
+        log.success("Done with GRPO training.")
+        if iteration % self.config.checkpoint.save_iter != 0:
+            self.checkpointer.save(model, optimizer, scheduler, grad_scaler, iteration=iteration)
+        self.callbacks.on_train_end(model, iteration=iteration)
+        self.checkpointer.finalize()
+        distributed.barrier()
+        self.callbacks.on_app_end()

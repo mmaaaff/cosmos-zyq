@@ -30,7 +30,7 @@ except ImportError:
     register_gr00t_customized_gr1_data = None
 
 # bridge dataset path
-base_path = "datasets/bridge/"
+base_path = "cosmos_predict2/datasets/bridge/"
 
 train_annotation_path = os.path.join(base_path, "annotation/train")
 val_annotation_path = os.path.join(base_path, "annotation/val")

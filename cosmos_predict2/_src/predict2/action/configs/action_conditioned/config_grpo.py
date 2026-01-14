@@ -18,7 +18,7 @@ from typing import Any, List
 import attrs
 
 from cosmos_predict2._src.imaginaire import config
-from cosmos_predict2._src.imaginaire.trainer import ImaginaireTrainer as Trainer
+from cosmos_predict2._src.imaginaire.trainer import trainer_grpo as Trainer
 from cosmos_predict2._src.imaginaire.utils.config_helper import import_all_modules_from_package
 from cosmos_predict2._src.predict2.action.configs.action_conditioned.conditioner import register_conditioner
 from cosmos_predict2._src.predict2.action.configs.action_conditioned.data import register_training_and_val_data
@@ -44,7 +44,8 @@ class Config(config.Config):
             {"data_val": "mock"},
             {"optimizer": "fusedadamw"},
             {"scheduler": "lambdalinear"},
-            {"model": "action_conditioned_video2world_fsdp_rectified_flow"},
+            # NOTE: GRPO default model group
+            {"model": "action_conditioned_video2world_fsdp_rectified_flow_grpo"},
             {"callbacks": "basic"},
             {"net": None},
             {"conditioner": "video_prediction_conditioner"},
@@ -74,7 +75,7 @@ def make_config() -> Config:
 
     c.trainer.type = Trainer
     c.trainer.straggler_detection.enabled = False
-    c.trainer.max_iter = 400_000
+    c.trainer.max_iter = 400_000  # max_iter 这里控制总共进行多少轮 采样本-GRPO 循环
     c.trainer.logging_iter = 10
     c.trainer.validation_iter = 100
     c.trainer.run_validation = False

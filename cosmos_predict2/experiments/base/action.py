@@ -24,7 +24,7 @@ DEFAULT_CHECKPOINT = MODEL_CHECKPOINTS[ModelKey()]  # This uses post_trained=Tru
 
 
 """
-torchrun --nproc_per_node=1 --master_port=12341 -m scripts.train --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config.py  -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320
+torchrun --nproc_per_node=1 --master_port=12341 -m scripts.train --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config.py  -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320 ~dataloader_train.dataloaders
 """
 ac_reason_embeddings_rectified_flow_2b_256_320 = LazyDict(
     dict(
@@ -126,9 +126,10 @@ ac_reason_embeddings_rectified_flow_2b_256_320 = LazyDict(
 )
 
 """
-torchrun --nproc_per_node=1 --master_port=12341 -m scripts.train \\
-  --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config.py \\
-  -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320_grpo
+torchrun --nproc_per_node=1 --master_port=12341 -m scripts.train \
+    --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config.py  \
+    -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320_grpo ~dataloader_train.dataloaders \
+    job.wandb_mode=disabled
 """
 ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
     dict(
@@ -226,8 +227,10 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                     guidance=3.0,
                     seed=1,
                     use_group_adv=True,
-                    num_generations=4,
+                    num_generations=2,
                     timestep_fraction=1.0,
+                    rollout_num_batches=1,  # 一次 rollout 多少个 batch
+                    num_updates=2,  # 用一组 rollout 训练多少轮
                     clip_range=1e-4,
                     adv_clip_max=5.0,
                 ),
@@ -244,7 +247,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                 dataset=dict(fps_downsample_ratio=1, video_size=[256, 320]),
             ),
             dataset=dict(fps_downsample_ratio=1, video_size=[256, 320]),
-        ),
+        ),  # dataloader 定义位于 cosmos_predict2/_src/predict2/action/configs/action_conditioned/data.py line 111
     ),
     flags={"allow_objects": True},
 )

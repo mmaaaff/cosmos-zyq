@@ -87,9 +87,10 @@ For python-based LazyConfig, use "path.key=value".
         help="Run profiler and save report to output directory.",
     )
     args = parser.parse_args()
-    config_module = get_config_module(args.config)
-    config = importlib.import_module(config_module).make_config()
-    overrides = list(args.opts)
+    config_module = get_config_module(args.config)  # 把 .../config.py 的文件名转换成 python 库的格式
+    config = importlib.import_module(config_module).make_config()  # 把 config.py import进来，调用里面的 make_config 函数
+
+    overrides = list(args.opts)  # 命令行上 -- 及之后的“剩余参数”会组成一个列表。在 override() 的逻辑中，"--" 被剔除
     if SMOKE:
         overrides.append("trainer.max_iter=2")
         overrides.append("trainer.logging_iter=1")
@@ -107,6 +108,8 @@ For python-based LazyConfig, use "path.key=value".
         os.makedirs(config.job.path_local, exist_ok=True)
         LazyConfig.save_yaml(config, f"{config.job.path_local}/config.yaml")
         print(f"{config.job.path_local}/config.yaml")
+        config_original = importlib.import_module(config_module).make_config()  # ttt
+        LazyConfig.save_yaml(config_original, f"{config.job.path_local}/config_original.yaml")  # ttt
     else:
         # Launch the training job.
         launch(config, args)

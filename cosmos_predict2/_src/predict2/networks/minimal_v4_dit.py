@@ -40,7 +40,7 @@ except ImportError:
 
 from torchvision import transforms
 
-if Version(te.__version__) >= Version("2.8.0"):
+if Version(te.__version__) >= Version("2.3.0"):
     from transformer_engine.pytorch.attention.rope import apply_rotary_pos_emb
 else:
     from transformer_engine.pytorch.attention import apply_rotary_pos_emb

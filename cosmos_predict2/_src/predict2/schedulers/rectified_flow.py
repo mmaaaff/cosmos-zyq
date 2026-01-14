@@ -126,7 +126,7 @@ class RectifiedFlow:
     def get_discrete_timestamp(self, u, tensor_kwargs):
         r"""This method map time from 0,1 to discrete steps"""
 
-        indices = (u.squeeze() * self.noise_scheduler.config.num_train_timesteps).long()
+        indices = (u.squeeze() * self.noise_scheduler.config.num_train_timesteps).long()  # .long() 转为 int64
         timesteps = self.noise_scheduler.timesteps.to(**tensor_kwargs)[indices]
         return timesteps.unsqueeze(0) if timesteps.ndim == 0 else timesteps
 
