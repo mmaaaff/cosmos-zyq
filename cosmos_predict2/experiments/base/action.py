@@ -228,6 +228,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                     seed=1,
                     use_group_adv=True,
                     num_generations=12,  # 一个 prompt 生成多少个样本
+                    init_same_noise=True,
                     timestep_fraction=0.6,
                     rollout_num_batches=4,  # 一次 rollout 多少个 batch，注意这里实际值要乘以 GPU 数量
                     num_updates=2,  # 用一组 rollout 训练多少轮

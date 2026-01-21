@@ -137,16 +137,15 @@ class WandbCallback(Callback):
             if model.is_image_batch(data_batch):
                 self.train_image_log.loss += loss.detach().float()
                 self.train_image_log.iter_count += 1
-                # self.train_image_log.edm_loss += output_batch["edm_loss"].detach().float()
-                # ZYQ
+                self.train_image_log.edm_loss += output_batch["edm_loss"].detach().float()
             else:
                 self.train_video_log.loss += loss.detach().float()
                 self.train_video_log.iter_count += 1
-                # self.train_video_log.edm_loss += output_batch["edm_loss"].detach().float()
+                self.train_video_log.edm_loss += output_batch["edm_loss"].detach().float()
 
             self.final_loss_log.loss += loss.detach().float()
             self.final_loss_log.iter_count += 1
-            # self.final_loss_log.edm_loss += output_batch["edm_loss"].detach().float()
+            self.final_loss_log.edm_loss += output_batch["edm_loss"].detach().float()
         else:
             if model.is_image_batch(data_batch):
                 self.img_unstable_count += 1
@@ -181,6 +180,24 @@ class WandbCallback(Callback):
                         "sample_counter": getattr(self.trainer, "sample_counter", iteration),
                     }
                 )
+
+                # zyq ---------- GRPO-friendly: if `output_batch` contains extra scalar stats (e.g., clip_frac, approx_kl) ----------
+                # log them automatically (no-op for diffusion training).
+                extra_scalar_keys = [
+                    "grpo_loss",
+                    "reward_mean",
+                    "reward_std",
+                    "adv_mean",
+                    "adv_std",
+                    "approx_kl",
+                    "clip_frac",
+                ]
+                for k in extra_scalar_keys:
+                    v = output_batch.get(k, None)
+                    if torch.is_tensor(v) and v.ndim == 0:
+                        info[f"train{self.wandb_extra_tag}/{k}"] = v.detach().float().item()
+                # ------------------------------------------------------------------------------------------------
+
                 if self.save_s3:
                     if (
                         iteration

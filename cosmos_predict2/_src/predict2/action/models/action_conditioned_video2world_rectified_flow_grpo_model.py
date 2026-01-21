@@ -30,16 +30,61 @@ def _dist_is_initialized() -> bool:
     return dist.is_available() and dist.is_initialized()
 
 
-def _all_gather_concat_1d(x: torch.Tensor) -> torch.Tensor:
+# ---------- 跟 Megatron 多 DP 子组相关的设置，实际上不一定用到 ----------
+# Megatron-core is optional in this repo; we mirror the pattern used in `imaginaire.trainer`.
+try:
+    from megatron.core import parallel_state  # type: ignore
+
+    _USE_MEGATRON = True
+except Exception:  # pragma: no cover
+    parallel_state = None  # type: ignore
+    _USE_MEGATRON = False
+
+
+def _get_data_parallel_group_with_cp():
+    """
+    Get the same data-parallel process group used by the DDP wrapper in this codebase.
+
+    Why:
+    - In Megatron setups (TP/PP/CP), the global WORLD group can contain multiple DP subgroups.
+    - DDP is created with `parallel_state.get_data_parallel_group(with_context_parallel=True)`; we must use the
+      *same* group for all_gather/reductions to keep semantics consistent and avoid cross-group mixing.
+    """
+    if _USE_MEGATRON and parallel_state is not None and parallel_state.is_initialized():
+        return parallel_state.get_data_parallel_group(with_context_parallel=True)
+    return None
+
+
+def _get_data_parallel_rank_for_seed() -> int:
+    """
+    DP rank used for randomness control.
+
+    We intentionally use Megatron's *data-parallel* rank (without context-parallel) when available so that:
+    - Different DP replicas get different rollout noise.
+    - Ranks within the same context-parallel group (CP shards of the same sample) share the same seed.
+    """
+    if _USE_MEGATRON and parallel_state is not None and parallel_state.is_initialized():
+        try:
+            return int(parallel_state.get_data_parallel_rank())
+        except TypeError:
+            # Some versions require explicit kwarg; fall back to the simplest call.
+            return int(parallel_state.get_data_parallel_rank())
+    if _dist_is_initialized():
+        return int(dist.get_rank())
+    return 0
+# -------------------------------------------------------------
+
+
+def _all_gather_concat_1d(x: torch.Tensor, group=None) -> torch.Tensor:
     """
     All-gather a 1D tensor across data-parallel ranks and concatenate on dim=0.
     """
 
     if not _dist_is_initialized():
         return x
-    world_size = dist.get_world_size()
+    world_size = dist.get_world_size(group=group)
     chunks = [torch.zeros_like(x) for _ in range(world_size)]
-    dist.all_gather(chunks, x.contiguous())
+    dist.all_gather(chunks, x.contiguous(), group=group)
     return torch.cat(chunks, dim=0)
 
 
@@ -52,6 +97,9 @@ class _GrpoHyperParams:
     guidance: float = 3.0
     seed: int = 1
     timestep_fraction: float = 1.0
+    # 如果启用 group（num_generations>1），是否让同一个 prompt 的一组样本共享相同的 init_noise
+    # 参考 Dance-GRPO/Flux 代码中的 `--init_same_noise`：提升训练稳定性。
+    init_same_noise: bool = False
     # Outer loop: rollout batch formation / inner loop: multi-updates
     rollout_num_batches: int = 1
     num_updates: int = 4
@@ -198,7 +246,8 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             adv = ((rewards_g - mean) / std).view_as(rewards_f)  # shape: [G, K] -> [B]
         else:
             # Global normalization across data-parallel ranks
-            gathered = _all_gather_concat_1d(rewards_f)  # shape: [B] -> [B_total]
+            dp_group = _get_data_parallel_group_with_cp()
+            gathered = _all_gather_concat_1d(rewards_f, group=dp_group)  # shape: [B] -> [B_total]
             mean = gathered.mean()
             std = gathered.std().clamp_min(1e-8)
             adv = (rewards_f - mean) / std  # shape: [B]
@@ -263,7 +312,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         self._normalize_video_databatch_inplace(data_batch)
         self._augment_image_dim_inplace(data_batch)
 
-        # Mirror official `Text2WorldModelRectifiedFlow.training_step` (359-362):
+        # 模仿官方的 `Text2WorldModelRectifiedFlow.training_step` (359-362):
         # If compute_online is enabled, overwrite t5 embeddings and set mask to all ones.
         if self.config.text_encoder_config is not None and self.config.text_encoder_config.compute_online:
             if self.text_encoder is None:
@@ -294,13 +343,30 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         generator = torch.Generator(device=self.tensor_kwargs["device"])
         # NOTE: When collecting multiple rollout batches per outer iteration, `rollout_seed_offset` must be different
         # to avoid sampling identical noise trajectories across batches.
-        generator.manual_seed(int(hp.seed) + int(rollout_seed_offset))
-        init_noise = torch.randn(
-            (b,) + state_shape,
-            device=self.tensor_kwargs["device"],
-            dtype=self.tensor_kwargs["dtype"],
-            generator=generator,
-        )
+        # Also offset by DP rank so different data-parallel replicas do not sample identical trajectories.
+        dp_rank = _get_data_parallel_rank_for_seed()
+        generator.manual_seed(int(hp.seed) + int(rollout_seed_offset) + 1 * int(dp_rank))
+        # -------------------- init noise sampling --------------------
+        # Dance-GRPO 风格：同一个 prompt 的 group（num_generations 个样本）共享同一个 init_noise，
+        # 以提高训练稳定性（参考 action/tmp/train_grpo_flux.py 的 `--init_same_noise`）。
+        if bool(hp.init_same_noise) and int(hp.num_generations) > 1:
+            assert b % int(hp.num_generations) == 0, "Batch size must be divisible by num_generations."
+            n_groups = b // int(hp.num_generations)
+            base_noise = torch.randn(
+                (n_groups,) + state_shape,
+                device=self.tensor_kwargs["device"],
+                dtype=self.tensor_kwargs["dtype"],
+                generator=generator,
+            )
+            # shape: [G, ...] -> [G*K, ...]，使每组 K 个样本共享同一份 noise
+            init_noise = base_noise.repeat_interleave(int(hp.num_generations), dim=0)
+        else:
+            init_noise = torch.randn(
+                (b,) + state_shape,
+                device=self.tensor_kwargs["device"],
+                dtype=self.tensor_kwargs["dtype"],
+                generator=generator,
+            )
 
         # IMPORTANT: fixed conditioning across updates
         velocity_fn = self.get_velocity_fn_from_batch(
@@ -323,8 +389,12 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         # sigmas = np.concatenate([sigmas, [sigma_last]]).astype(np.float32)
 
         latents = init_noise.to(self.tensor_kwargs["dtype"])
+        init_noise_local = init_noise
         if self.net.is_context_parallel_enabled:
-            latents = broadcast_split_tensor(latents, seq_dim=2, process_group=self.get_context_parallel_group())
+            cp_group = self.get_context_parallel_group()
+            # IMPORTANT: keep noise and latents aligned in shape under context parallel.
+            init_noise_local = broadcast_split_tensor(init_noise_local, seq_dim=2, process_group=cp_group)
+            latents = broadcast_split_tensor(latents, seq_dim=2, process_group=cp_group)
 
         all_latents = []
         all_next_latents = []
@@ -338,7 +408,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
 
             t_B_1 = torch.stack([t_tok]).unsqueeze(0)  # [1,1]
             # print(f"dtype of init_noise: {init_noise.dtype}, dtype of latents: {latents.dtype}, dtype of t_B_1: {t_B_1.dtype}")
-            v_pred = velocity_fn(init_noise, latents, t_B_1)
+            v_pred = velocity_fn(init_noise_local, latents, t_B_1)
             # print("pass 1 time")
 
             eps = torch.randn(latents.shape, dtype=torch.float32, device=latents.device, generator=generator)
@@ -399,7 +469,8 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             old_log_probs=old_log_probs_s,
             timestep_tokens=timesteps.detach(),
             sigmas=sigmas.detach(),
-            init_noise=init_noise.detach(),
+            # IMPORTANT: store the local (possibly context-parallel split) noise for later updates.
+            init_noise=init_noise_local.detach(),
             rewards=rewards.detach(),
             advantages=advantages.detach(),
             velocity_fn=velocity_fn,
@@ -491,6 +562,8 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             "approx_kl": approx_kl,
             "clip_frac": clip_frac,
         }
+        # 为了保证使用原本 WandbCallback 不出错，需要加一个 edm_loss 字段，这里直接把 grpo_loss 的值赋给它
+        output_batch["edm_loss"] = output_batch["grpo_loss"]
         return output_batch, loss
 
     # ----------------------------- GRPO training -----------------------------

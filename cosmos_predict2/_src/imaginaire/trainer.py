@@ -471,7 +471,7 @@ class trainer_grpo(ImaginaireTrainer):
                         print("new rollout batch")
                         samples_list.append(
                             model_ddp.collect_rollout_and_rewards(  # 每次设置不同的 seed 避免使用同样的初始 noise
-                                b, rollout_seed_offset=iteration * 1000 + batch_idx
+                                b, rollout_seed_offset=iteration * 1_000_000 + batch_idx * 1_000
                             )
                         )
 
