@@ -126,8 +126,8 @@ ac_reason_embeddings_rectified_flow_2b_256_320 = LazyDict(
 )
 
 """
-torchrun --nproc_per_node=1 --master_port=12341 -m scripts.train \
-    --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config.py  \
+torchrun --nproc_per_node=8 --master_port=12341 -m scripts.train \
+    --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config_grpo.py  \
     -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320_grpo ~dataloader_train.dataloaders \
     job.wandb_mode=disabled
 """
@@ -149,7 +149,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
             name="2b_bridge_action_conditioned_grpo",
         ),
         optimizer=dict(
-            lr=2 ** (-14.5),
+            lr=1e-5,
             weight_decay=0.1,
         ),
         checkpoint=dict(
@@ -222,14 +222,14 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                 # NOTE: 这些字段由 GRPO 模型的 Config 定义；在 dummy reward 阶段先给一个可跑通的默认值。
                 grpo=dict(
                     num_steps=16,
-                    shift=5.0,
-                    eta=0.0,
+                    shift=5.0,  # 这个数据来源于 Cosmos 原始代码，可查找 set_timesteps
+                    eta=0.3,  # follows GRPO
                     guidance=3.0,
                     seed=1,
                     use_group_adv=True,
-                    num_generations=2,
-                    timestep_fraction=1.0,
-                    rollout_num_batches=1,  # 一次 rollout 多少个 batch
+                    num_generations=12,  # 一个 prompt 生成多少个样本
+                    timestep_fraction=0.6,
+                    rollout_num_batches=4,  # 一次 rollout 多少个 batch，注意这里实际值要乘以 GPU 数量
                     num_updates=2,  # 用一组 rollout 训练多少轮
                     clip_range=1e-4,
                     adv_clip_max=5.0,

@@ -477,7 +477,6 @@ class trainer_grpo(ImaginaireTrainer):
 
                 # -------------------- Inner loop: multiple updates on same rollout --------------------
                 num_updates = int(getattr(getattr(model, "config", None), "grpo", {}).get("num_updates", 1))  # type: ignore[union-attr]
-                num_updates = max(1, num_updates)
 
 
                 # 目前是按照 rollout 阶段未打乱的 batch 进行更新，后续可以考虑按照打乱后的 batch 进行更新
@@ -495,7 +494,7 @@ class trainer_grpo(ImaginaireTrainer):
                     last_loss: torch.Tensor | None = None
 
                     for batch_idx, s in enumerate(samples_list):
-                        print(f'batch_idx = {batch_idx}')
+                        print(f"batch_idx = {batch_idx}")
                         w = float(int(s.rewards.shape[0])) / float(total_b)  # 本批次权重
 
                         # DDP 只在 accume 到最后要更新的那一步的时候才同步梯度
@@ -510,6 +509,8 @@ class trainer_grpo(ImaginaireTrainer):
                             # Weight the micro loss and normalize by grad_accum_iter
                             loss_micro = loss_i * w
                             last_loss = loss_micro
+                            # print(f"loss_i: {loss_i}")
+                            # print(f"last_loss: {last_loss}")
 
                             self.callbacks.on_before_backward(model_ddp, loss_micro, iteration=iteration)
                             loss_scaled = grad_scaler.scale(loss_micro / self.config.trainer.grad_accum_iter)
@@ -560,6 +561,7 @@ class trainer_grpo(ImaginaireTrainer):
                             # Treat each optimizer step as an iteration
                             iteration += 1
                             # For callback signatures, pass the (weighted) output_batch stats; loss is the last micro loss.
+                            # print(f"last_loss: {last_loss}")
                             if last_loss is None:
                                 last_loss = torch.zeros((), device="cuda")
                             self.callbacks.on_training_step_batch_end(

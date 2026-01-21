@@ -102,6 +102,9 @@ def grpo_sde_step(
         next_latents = fixed_next_latents.to(torch.float32)
 
     log_prob = _normal_log_prob(next_latents, mean, std)
+    # print(f"mean: {mean[0, 0, 0, :10, 10]}")
+    # print(f"std: {std}")
+    # print(f"log_probs: {log_prob}")
     return GrpoStepOutput(next_latents=next_latents.to(latents.dtype), pred_x0=pred_x0.to(latents.dtype), log_prob=log_prob)
 
 

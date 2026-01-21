@@ -315,6 +315,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             use_kerras_sigma=self.config.use_kerras_sigma_at_inference,
         )
         sigmas = self.sample_scheduler.sigmas.to(device=self.tensor_kwargs["device"], dtype=torch.float32)  # [S+1]
+        # print(f"sigmas: {sigmas}")
         # NOTE: keep timestep tokens as int64 (same as the existing sampling code path)
         timesteps = self.sample_scheduler.timesteps.to(device=self.tensor_kwargs["device"], dtype=torch.int64)  # [S]
         # 在 FlowUniPCMultistepScheduler 中可以看到：
@@ -336,9 +337,9 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             sigma_next = sigmas[i + 1]
 
             t_B_1 = torch.stack([t_tok]).unsqueeze(0)  # [1,1]
-            print(f"dtype of init_noise: {init_noise.dtype}, dtype of latents: {latents.dtype}, dtype of t_B_1: {t_B_1.dtype}")
+            # print(f"dtype of init_noise: {init_noise.dtype}, dtype of latents: {latents.dtype}, dtype of t_B_1: {t_B_1.dtype}")
             v_pred = velocity_fn(init_noise, latents, t_B_1)
-            print("pass 1 time")
+            # print("pass 1 time")
 
             eps = torch.randn(latents.shape, dtype=torch.float32, device=latents.device, generator=generator)
             step_out = grpo_sde_step(
@@ -442,7 +443,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         old_log_probs_i = samples.old_log_probs[arange_b[:, None], idx].to(torch.float32)  # [B,train_T]
 
         new_log_probs_list = []
-        for j in range(train_T):
+        for j in range(train_T):  # 对所有样本逐步遍历各个训练时间步
             # Per-sample timestep token / sigma for this update step
             idx_b = idx[:, j]  # [B]
             t_tok_b = samples.timestep_tokens.index_select(dim=0, index=idx_b)  # [B]
@@ -462,9 +463,9 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
                 noise=torch.zeros_like(latents_i[:, j]),
                 fixed_next_latents=next_latents_i[:, j],
             )
-            new_log_probs_list.append(step_out.log_prob.to(torch.float32))
+            new_log_probs_list.append(step_out.log_prob.to(torch.float32))  # 每次 append 一列 [B, 1]
 
-        new_log_probs = torch.stack(new_log_probs_list, dim=1)  # [B,train_T]
+        new_log_probs = torch.stack(new_log_probs_list, dim=1)  # 按 dim=1 进行 stack，size 为 [B,train_T]
         ratio = torch.exp(new_log_probs - old_log_probs_i)
         adv = samples.advantages.to(torch.float32).unsqueeze(1).expand_as(ratio)
 
@@ -474,6 +475,12 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
 
         approx_kl = torch.mean(old_log_probs_i - new_log_probs).detach()
         clip_frac = torch.mean(((ratio - 1.0).abs() > hp.clip_range).to(torch.float32)).detach()
+        # print(f"old_log_probs_i: {old_log_probs_i}")
+        # print(f"new_log_probs: {new_log_probs}")
+        # print(f"adv: {adv}")
+        # print(f"ratio: {ratio}")
+        # print(f"clip_frac: {clip_frac}")
+        # print(f"GRPO loss: {loss}")
 
         output_batch: Dict[str, torch.Tensor] = {
             "grpo_loss": loss.detach(),
@@ -487,7 +494,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         return output_batch, loss
 
     # ----------------------------- GRPO training -----------------------------
-    def training_step(
+    def training_step(  # 这玩意放这里不是真正用来用的，而是兼容原本的 trainer 类用的
         self, 
         data_batch: Dict[str, torch.Tensor], 
         iteration: int

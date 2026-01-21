@@ -137,15 +137,16 @@ class WandbCallback(Callback):
             if model.is_image_batch(data_batch):
                 self.train_image_log.loss += loss.detach().float()
                 self.train_image_log.iter_count += 1
-                self.train_image_log.edm_loss += output_batch["edm_loss"].detach().float()
+                # self.train_image_log.edm_loss += output_batch["edm_loss"].detach().float()
+                # ZYQ
             else:
                 self.train_video_log.loss += loss.detach().float()
                 self.train_video_log.iter_count += 1
-                self.train_video_log.edm_loss += output_batch["edm_loss"].detach().float()
+                # self.train_video_log.edm_loss += output_batch["edm_loss"].detach().float()
 
             self.final_loss_log.loss += loss.detach().float()
             self.final_loss_log.iter_count += 1
-            self.final_loss_log.edm_loss += output_batch["edm_loss"].detach().float()
+            # self.final_loss_log.edm_loss += output_batch["edm_loss"].detach().float()
         else:
             if model.is_image_batch(data_batch):
                 self.img_unstable_count += 1
