@@ -439,7 +439,7 @@ class trainer_grpo(ImaginaireTrainer):
                 if iteration >= self.config.trainer.max_iter:
                     break
                 
-                print("New Rollout")
+                log.info("New Rollout")
 
                 # -------------------- Outer loop: collect rollout batch --------------------
                 # NOTE: `rollout_num_batches` is stored in model.config.grpo (dict) for simplicity.
@@ -468,7 +468,7 @@ class trainer_grpo(ImaginaireTrainer):
                     # 逐 batch 收集 rollout 样本并保存为一个列表
                     samples_list = []
                     for batch_idx, b in enumerate(rollout_batches):
-                        print("new rollout batch")
+                        # log.info("new rollout batch")
                         samples_list.append(
                             model_ddp.collect_rollout_and_rewards(  # 每次设置不同的 seed 避免使用同样的初始 noise
                                 b, rollout_seed_offset=iteration * 1_000_000 + batch_idx * 1_000
@@ -481,7 +481,7 @@ class trainer_grpo(ImaginaireTrainer):
 
                 # 目前是按照 rollout 阶段未打乱的 batch 进行更新，后续可以考虑按照打乱后的 batch 进行更新
                 for update_idx in range(num_updates):
-                    print(f"update_idx = {update_idx}")
+                    log.info(f"update_idx = {update_idx}")
                     # Switch to train mode for policy update
                     model_ddp.train()
                     if self.config.trainer.distributed_parallelism == "ddp":
@@ -494,8 +494,7 @@ class trainer_grpo(ImaginaireTrainer):
                     last_loss: torch.Tensor | None = None
 
                     for batch_idx, s in enumerate(samples_list):
-                        print(f"batch_idx = {batch_idx}")
-                        w = float(int(s.rewards.shape[0])) / float(total_b)  # 本批次权重
+                        # print(f"batch_idx = {batch_idx}")
 
                         # DDP 只在 accume 到最后要更新的那一步的时候才同步梯度
                         sync_grad = grad_accum_iter == self.config.trainer.grad_accum_iter - 1
@@ -507,13 +506,12 @@ class trainer_grpo(ImaginaireTrainer):
                             self.callbacks.on_after_forward(iteration=iteration)
 
                             # Weight the micro loss and normalize by grad_accum_iter
-                            loss_micro = loss_i * w
-                            last_loss = loss_micro
+                            last_loss = loss_i
                             # print(f"loss_i: {loss_i}")
                             # print(f"last_loss: {last_loss}")
 
-                            self.callbacks.on_before_backward(model_ddp, loss_micro, iteration=iteration)
-                            loss_scaled = grad_scaler.scale(loss_micro / self.config.trainer.grad_accum_iter)
+                            self.callbacks.on_before_backward(model_ddp, loss_i, iteration=iteration)
+                            loss_scaled = grad_scaler.scale(loss_i / self.config.trainer.grad_accum_iter)
                             loss_scaled.backward()
                             if self.config.trainer.distributed_parallelism == "ddp":
                                 model_ddp.module.on_after_backward()
@@ -526,7 +524,7 @@ class trainer_grpo(ImaginaireTrainer):
                         for k, v in out_i.items():
                             if torch.is_tensor(v):
                                 if v.ndim == 0:
-                                    output_batch_accum[k] = output_batch_accum.get(k, torch.zeros_like(v)) + v.detach() * w
+                                    output_batch_accum[k] = output_batch_accum.get(k, torch.zeros_like(v)) + v.detach()
                                 elif v.ndim >= 1 and v.shape[0] == b_i:
                                     if k not in output_batch_accum:
                                         output_batch_accum[k] = v.detach()
@@ -586,6 +584,7 @@ class trainer_grpo(ImaginaireTrainer):
                             output_batch_accum = {}
                             last_loss = None
 
+                    log.info(loss_scaled)
                     if _end_training:
                         break
 

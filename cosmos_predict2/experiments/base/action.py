@@ -132,7 +132,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320 = LazyDict(
 torchrun --nproc_per_node=8 --master_port=12341 -m scripts.train \
     --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config_grpo.py  \
     -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320_grpo ~dataloader_train.dataloaders \
-    job.wandb_mode=disabled
+    job.wandb_mode=offline
 """
 ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
     dict(
@@ -147,7 +147,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
             "_self_",
         ],
         job=dict(
-            project="cosmos_predict2_action_conditioned",
+            project="cosmos_predict2_action_conditioned_grpo",
             group="cosmos_predict_v2p5",
             name="2b_bridge_action_conditioned_grpo",
         ),
@@ -170,8 +170,12 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
         ),
         trainer=dict(
             straggler_detection=dict(enabled=False),
+            logging_iter=1,
             # NOTE: GRPO 训练通常更慢；可以视情况把采样 callback 频率调低
             callbacks=dict(
+                grad_clip=dict(
+                    clip_norm=1,  # following Dance-GRPO
+                ),
                 every_n_sample_reg=dict(
                     every_n=10_000,
                     do_x0_prediction=False,
@@ -240,7 +244,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                 ),
                 reward=dict(
                     # NOTE: reward model 还未定稿，先用 dummy reward 打通链路
-                    type="dummy",
+                    type="ssim",
                 ),
             ),
         ),
