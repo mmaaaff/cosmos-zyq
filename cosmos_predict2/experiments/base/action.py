@@ -150,6 +150,8 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
             project="cosmos_predict2_action_conditioned_grpo",
             group="cosmos_predict_v2p5",
             name="2b_bridge_action_conditioned_grpo",
+            reuse_id=False,
+            wandb_resume="never",
         ),
         optimizer=dict(
             lr=1e-5,

@@ -47,15 +47,25 @@ def init_wandb(config: Config, model: ImaginaireModel) -> None:
     else:
         config_job = config.job
     config_checkpoint = config.checkpoint
-    # Try to fetch the W&B job ID for resuming training.
-    wandb_id = _read_wandb_id(config_job, config_checkpoint)
-    if wandb_id is None:
-        # Generate a new W&B job ID.
-        wandb_id = wandb.util.generate_id()
-        _write_wandb_id(config_job, config_checkpoint, wandb_id=wandb_id)
-        log.info(f"Generating new wandb ID: {wandb_id}")
+    # Decide whether to reuse a persisted W&B run id.
+    #
+    # - When `job.wandb_reuse_id=True` (default), we read/write `wandb_id.txt` under `job.path_local`
+    #   so reruns can resume the same W&B run id.
+    # - When False, we always generate a fresh id per launch and DO NOT write `wandb_id.txt`.
+    wandb_id: str | None = None
+    if getattr(config_job, "wandb_reuse_id", True):
+        # Try to fetch the W&B job ID for resuming training.
+        wandb_id = _read_wandb_id(config_job, config_checkpoint)
+        if wandb_id is None:
+            # Generate a new W&B job ID and persist it for future resume.
+            wandb_id = wandb.util.generate_id()
+            _write_wandb_id(config_job, config_checkpoint, wandb_id=wandb_id)
+            log.info(f"Generating new wandb ID (persisted): {wandb_id}")
+        else:
+            log.info(f"Resuming with existing wandb ID (persisted): {wandb_id}")
     else:
-        log.info(f"Resuming with existing wandb ID: {wandb_id}")
+        wandb_id = wandb.util.generate_id()
+        log.info(f"Generating new wandb ID (no persistence): {wandb_id}")
     # refactor config so that wandb better understands it
     local_safe_yaml_fp = LazyConfig.save_yaml(config, os.path.join(config_job.path_local, "config.yaml"))
     if os.path.exists(local_safe_yaml_fp):
@@ -71,7 +81,7 @@ def init_wandb(config: Config, model: ImaginaireModel) -> None:
         name=config_job.name,
         config=config_resolved,
         dir=config_job.path_local,
-        resume="allow",
+        resume=getattr(config_job, "wandb_resume", "allow"),
         mode=config_job.wandb_mode,
     )
 

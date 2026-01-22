@@ -189,8 +189,23 @@ class JobConfig:
     group: str = ""
     # Run/job name.
     name: str = ""
-    # W&B mode, can be "online", or "disabled".
+    # W&B mode, can be "online", "offline", or "disabled".
     wandb_mode: str = "online"
+    # Whether to reuse a persisted W&B run id (wandb_id.txt) under `path_local`.
+    #
+    # - True (default): reuse `wandb_id.txt` if it exists, enabling seamless resume across restarts.
+    # - False: always generate a fresh run id for each launch (and do NOT write wandb_id.txt).
+    #
+    # This flag mainly affects the suffix in `wandb` run directories such as:
+    # `offline-run-<timestamp>-<id>`, where `<id>` comes from `wandb.init(id=...)`.
+    wandb_reuse_id: bool = True
+    # wandb.init(resume=...) behavior.
+    #
+    # Common values:
+    # - "allow" (default): resume if possible, otherwise start a new run.
+    # - "never": never resume a prior run.
+    # - "must": must resume; error if not possible.
+    wandb_resume: str = "allow"
     # Cluster configuration (optional, for cluster-specific settings).
     cluster: Optional[Any] = None
 
