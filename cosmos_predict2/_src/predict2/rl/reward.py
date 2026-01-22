@@ -15,6 +15,11 @@ import torch
 import torch.nn.functional as F
 
 
+import numpy as np
+import os
+import torchvision
+
+
 @dataclass
 class RewardInput:
     """
@@ -125,6 +130,11 @@ class SSIM_Reward(BaseRewardModel):
 
         pred_01 = _to_01(pred)
         ref_01 = _to_01(ref)
+        # ----------------------------
+        self.save_dir = "/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/tmp"
+        self.save_video_tensor(pred_01, "pred")
+        self.save_video_tensor(ref_01, "ref")
+        # ----------------------------
 
         # -------- 4) 计算 SSIM（逐帧），再对 T 平均，输出 [B] --------
         # 实现说明（清晰注释）：
@@ -176,3 +186,79 @@ class SSIM_Reward(BaseRewardModel):
         reward_b = ssim_bt.mean(dim=1)  # [B]
 
         return reward_b.to(dtype=torch.float32, device=pred.device)
+    
+    # ---------------------- 用来看看 sde 采样的质量行不行 ---------------------------
+    def save_video_tensor(self, video: torch.Tensor, prefix: str = "video"):
+        """保存视频张量到文件"""
+        import uuid
+        import time
+            
+        # 确保是 [B, C, T, H, W] 格式
+        if video.ndim == 5:
+            B, C, T, H, W = video.shape
+            for b in range(min(B, 2)):  # 最多保存前2个batch
+                # 创建文件名
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                unique_id = str(uuid.uuid4())[:8]
+                filename = f"{prefix}_{timestamp}_{unique_id}_b{b}.mp4"
+                filepath = os.path.join(self.save_dir, filename)
+                
+                # 取出单个样本 [C, T, H, W]
+                video_sample = video[b]
+                
+                # 保存为视频文件
+                self._save_video_file(video_sample, filepath)
+                
+                # 同时保存第一帧为图片（便于快速查看）
+                if T > 0:
+                    img_filename = f"{prefix}_{timestamp}_{unique_id}_b{b}_frame0.png"
+                    img_path = os.path.join(self.save_dir, img_filename)
+                    self._save_image(video_sample[:, 0], img_path)
+    
+    def _save_video_file(self, video: torch.Tensor, filepath: str):
+        """保存单个视频到文件"""
+        # video: [C, T, H, W]
+        C, T, H, W = video.shape
+        
+        # 转换为 [T, C, H, W] -> [T, H, W, C]
+        video_np = video.permute(1, 2, 3, 0).cpu().numpy()
+        
+        # 确保数值范围在 [0, 1]
+        video_np = np.clip(video_np, 0, 1)
+        
+        if C == 1:
+            # 灰度视频，需要复制为RGB
+            video_np = np.repeat(video_np, 3, axis=-1)
+        elif C == 3:
+            # RGB视频，保持原样
+            pass
+        else:
+            # 其他通道数，取前3个通道
+            video_np = video_np[..., :3]
+        
+        # 转换为 uint8
+        video_np = (video_np * 255).astype(np.uint8)
+        
+        # 使用 OpenCV 或 imageio 保存
+        try:
+            import imageio
+            imageio.mimwrite(filepath, video_np, fps=10, quality=8)
+            print(f"Saved video to {filepath}")
+        except ImportError:
+            import cv2
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(filepath, fourcc, 10, (W, H))
+            for frame in video_np:
+                out.write(frame)
+            out.release()
+            print(f"Saved video to {filepath} (using OpenCV)")
+            
+    def _save_image(self, image: torch.Tensor, filepath: str):
+        """保存单张图片"""
+        import matplotlib.pyplot as plt
+        
+        # image: [C, H, W]
+        image_np = image.permute(1, 2, 0).cpu().numpy()
+        image_np = np.clip(image_np, 0, 1)
+        
+        plt.imsave(filepath, image_np)

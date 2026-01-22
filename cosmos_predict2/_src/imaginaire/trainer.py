@@ -435,11 +435,13 @@ class trainer_grpo(ImaginaireTrainer):
             maybe_enable_memory_snapshot(self.config, global_step=iteration) as memory_profiler,
         ):
             dataloader_train_iter = iter(dataloader_train)
+            rollout_idx = 0
             while True:
+                rollout_idx += 1
                 if iteration >= self.config.trainer.max_iter:
                     break
                 
-                log.info("New Rollout")
+                log.info(f"Rollout idx: {rollout_idx}")
 
                 # -------------------- Outer loop: collect rollout batch --------------------
                 # NOTE: `rollout_num_batches` is stored in model.config.grpo (dict) for simplicity.

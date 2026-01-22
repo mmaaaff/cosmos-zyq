@@ -132,7 +132,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320 = LazyDict(
 torchrun --nproc_per_node=8 --master_port=12341 -m scripts.train \
     --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config_grpo.py  \
     -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320_grpo ~dataloader_train.dataloaders \
-    job.wandb_mode=offline
+    job.wandb_mode=disabled
 """
 ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
     dict(
@@ -150,7 +150,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
             project="cosmos_predict2_action_conditioned_grpo",
             group="cosmos_predict_v2p5",
             name="2b_bridge_action_conditioned_grpo",
-            reuse_id=False,
+            wandb_reuse_id=False,
             wandb_resume="never",
         ),
         optimizer=dict(
@@ -172,7 +172,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
         ),
         trainer=dict(
             straggler_detection=dict(enabled=False),
-            logging_iter=1,
+            logging_iter=10,
             # NOTE: GRPO 训练通常更慢；可以视情况把采样 callback 频率调低
             callbacks=dict(
                 grad_clip=dict(
@@ -230,9 +230,9 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                 # ---------------- GRPO hyperparameters (placeholders) ----------------
                 # NOTE: 这些字段由 GRPO 模型的 Config 定义；在 dummy reward 阶段先给一个可跑通的默认值。
                 grpo=dict(
-                    num_steps=16,
+                    num_steps=50,
                     shift=5.0,  # 这个数据来源于 Cosmos 原始代码，可查找 set_timesteps
-                    eta=0.3,  # follows GRPO
+                    eta=0.01,  # follows GRPO
                     guidance=3.0,
                     seed=1,
                     use_group_adv=True,
