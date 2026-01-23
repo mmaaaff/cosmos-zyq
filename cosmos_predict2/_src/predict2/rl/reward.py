@@ -130,10 +130,11 @@ class SSIM_Reward(BaseRewardModel):
 
         pred_01 = _to_01(pred)
         ref_01 = _to_01(ref)
+        
         # ----------------------------
-        self.save_dir = "/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/tmp"
-        self.save_video_tensor(pred_01, "pred")
-        self.save_video_tensor(ref_01, "ref")
+        # self.save_dir = "/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/tmp"
+        # self.save_video_tensor(pred_01, "pred")
+        # self.save_video_tensor(ref_01, "ref")
         # ----------------------------
 
         # -------- 4) 计算 SSIM（逐帧），再对 T 平均，输出 [B] --------

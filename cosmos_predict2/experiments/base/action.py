@@ -24,10 +24,10 @@ DEFAULT_CHECKPOINT = MODEL_CHECKPOINTS[ModelKey()]  # This uses post_trained=Tru
 
 
 """
-torchrun --nproc_per_node=8 --master_port=12341 -m scripts.train \
+torchrun --nproc_per_node=1 --master_port=12341 -m scripts.train \
     --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config.py  \
     -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320 ~dataloader_train.dataloaders \
-    job.wandb_mode=offline
+    job.wandb_mode=disabled
 """
 ac_reason_embeddings_rectified_flow_2b_256_320 = LazyDict(
     dict(
@@ -132,7 +132,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320 = LazyDict(
 torchrun --nproc_per_node=8 --master_port=12341 -m scripts.train \
     --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config_grpo.py  \
     -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320_grpo ~dataloader_train.dataloaders \
-    job.wandb_mode=disabled
+    job.wandb_mode=offline
 """
 ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
     dict(
@@ -158,9 +158,9 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
             weight_decay=0.1,
         ),
         checkpoint=dict(
-            save_iter=2_000,
+            save_iter=1_000,
             # pyrefly: ignore  # missing-attribute
-            load_path=get_checkpoint_path(DEFAULT_CHECKPOINT.s3.uri),
+            load_path="/inspire/qb-ilm/project/robot3d/czxs25210241/hf/hub/models--nvidia--Cosmos-Predict2.5-2B/snapshots/e26f8a125a2235c5a00245a65207402dd0cdcb89/robot/action-cond/38c6c645-7d41-4560-8eeb-6f4ddc0e6574_ema_bf16.pt",  # 直接使用 post-train 过的模型
             load_training_state=False,
             strict_resume=False,
             load_from_object_store=dict(
@@ -219,6 +219,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
         model=dict(
             config=dict(
                 # ---------------- action-conditioned base config ----------------
+                # use_kerras_sigma_at_inference=False,
                 min_num_conditional_frames=1,
                 max_num_conditional_frames=1,
                 conditional_frames_probs=None,
@@ -230,10 +231,10 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                 # ---------------- GRPO hyperparameters (placeholders) ----------------
                 # NOTE: 这些字段由 GRPO 模型的 Config 定义；在 dummy reward 阶段先给一个可跑通的默认值。
                 grpo=dict(
-                    num_steps=50,
-                    shift=5.0,  # 这个数据来源于 Cosmos 原始代码，可查找 set_timesteps
-                    eta=0.01,  # follows GRPO
-                    guidance=3.0,
+                    num_steps=25,
+                    shift=5.0,  # Cosmos 原始代码 5.0，但感觉应该没用？因为似乎 use_kerras_sigma_at_inference 是 True（不过 grpo 这里我已经改成 flase）
+                    eta=0.3,  # follows GRPO
+                    guidance=7.0,
                     seed=1,
                     use_group_adv=True,
                     num_generations=12,  # 一个 prompt 生成多少个样本

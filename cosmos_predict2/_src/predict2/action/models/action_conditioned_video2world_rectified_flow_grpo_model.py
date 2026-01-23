@@ -320,8 +320,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             text_embeddings = self.text_encoder.compute_text_embeddings_online(data_batch, self.input_caption_key)
             data_batch["t5_text_embeddings"] = text_embeddings.to(**self.tensor_kwargs)
             data_batch["t5_text_mask"] = torch.ones(
-                text_embeddings.shape[0], text_embeddings.shape[1], device=self.tensor_kwargs["device"], dtype=torch.int64
-            )
+                text_embeddings.shape[0], text_embeddings.shape[1], device=self.tensor_kwargs["device"])
 
         data_batch = self._maybe_repeat_batch_for_group(data_batch, hp.num_generations)
         # IMPORTANT: avoid dtype mismatch inside action embedder (Linear) during rollout
@@ -381,14 +380,14 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             use_kerras_sigma=self.config.use_kerras_sigma_at_inference,
         )
         sigmas = self.sample_scheduler.sigmas.to(device=self.tensor_kwargs["device"], dtype=torch.float32)  # [S+1]
-        # print(f"sigmas: {sigmas}")
         # NOTE: keep timestep tokens as int64 (same as the existing sampling code path)
-        timesteps = self.sample_scheduler.timesteps.to(device=self.tensor_kwargs["device"], dtype=torch.int64)  # [S]
+        timesteps = self.sample_scheduler.timesteps.to(device=self.tensor_kwargs["device"])  # [S]
+        # print(f"sigmas: {sigmas}, timesteps: {timesteps}")
         # 在 FlowUniPCMultistepScheduler 中可以看到：
         # timesteps = sigmas * self.config.num_train_timesteps
         # sigmas = np.concatenate([sigmas, [sigma_last]]).astype(np.float32)
 
-        latents = init_noise.to(self.tensor_kwargs["dtype"])
+        latents = init_noise#.to(self.tensor_kwargs["dtype"])
         init_noise_local = init_noise
         if self.net.is_context_parallel_enabled:
             cp_group = self.get_context_parallel_group()
@@ -407,6 +406,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             sigma_next = sigmas[i + 1]
 
             t_B_1 = torch.stack([t_tok]).unsqueeze(0)  # [1,1]
+            t_B_1 = t_B_1.repeat(b, 1)
             # print(f"dtype of init_noise: {init_noise.dtype}, dtype of latents: {latents.dtype}, dtype of t_B_1: {t_B_1.dtype}")
             v_pred = velocity_fn(init_noise_local, latents, t_B_1)
             # print("pass 1 time")
@@ -424,10 +424,11 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
 
             # IMPORTANT: keep next_latents/latents in model dtype for the next denoise call.
             next_latents = step_out.next_latents
+            # next_latents= self.sample_scheduler.step(v_pred, t_tok, latents, return_dict=False, generator=generator)[0]
             all_latents.append(latents)
             all_next_latents.append(next_latents)
             all_old_log_probs.append(step_out.log_prob.to(torch.float32))  # [B]
-
+            
             latents = next_latents
 
         latents_s = torch.stack(all_latents, dim=1)  # [B,S,...]

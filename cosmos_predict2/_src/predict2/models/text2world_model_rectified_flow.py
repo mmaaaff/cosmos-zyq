@@ -401,6 +401,7 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
 
         timesteps = rearrange(timesteps, "b -> b 1")
         sigmas = rearrange(sigmas, "b -> b 1")
+        # print(f"t_B:{t_B}, timesteps:{timesteps}, sigmas:{sigmas}")
         xt_B_C_T_H_W, vt_B_C_T_H_W = self.rectified_flow.get_interpolation(epsilon_B_C_T_H_W, x0_B_C_T_H_W, sigmas)
 
         vt_pred_B_C_T_H_W = self.denoise(
