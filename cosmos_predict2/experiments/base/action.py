@@ -24,10 +24,10 @@ DEFAULT_CHECKPOINT = MODEL_CHECKPOINTS[ModelKey()]  # This uses post_trained=Tru
 
 
 """
-torchrun --nproc_per_node=1 --master_port=12341 -m scripts.train \
+torchrun --nproc_per_node=8 --master_port=12341 -m scripts.train \
     --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config.py  \
     -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320 ~dataloader_train.dataloaders \
-    job.wandb_mode=disabled
+    job.wandb_mode=offline
 """
 ac_reason_embeddings_rectified_flow_2b_256_320 = LazyDict(
     dict(
@@ -44,6 +44,9 @@ ac_reason_embeddings_rectified_flow_2b_256_320 = LazyDict(
             project="cosmos_predict2_action_conditioned",
             group="cosmos_predict_v2p5",
             name="2b_bridge_action_conditioned",
+            # zyq
+            wandb_reuse_id=False,
+            wandb_resume="never",
         ),
         optimizer=dict(
             lr=2 ** (-14.5),  # 2**(-14.5) = 3.0517578125e-05
@@ -160,7 +163,8 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
         checkpoint=dict(
             save_iter=1_000,
             # pyrefly: ignore  # missing-attribute
-            load_path="/inspire/qb-ilm/project/robot3d/czxs25210241/hf/hub/models--nvidia--Cosmos-Predict2.5-2B/snapshots/e26f8a125a2235c5a00245a65207402dd0cdcb89/robot/action-cond/38c6c645-7d41-4560-8eeb-6f4ddc0e6574_ema_bf16.pt",  # 直接使用 post-train 过的模型
+            load_path="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned/cosmos_predict_v2p5/2b_bridge_action_conditioned/checkpoints/iter_000136000/model_ema_fp32.pt",  # 直接使用 post-train 过的模型
+            #load_path=get_checkpoint_path("s3://bucket/cosmos_predict2_action_conditioned/action_conditional/cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320/checkpoints/iter_000016000/model"),
             load_training_state=False,
             strict_resume=False,
             load_from_object_store=dict(
@@ -237,11 +241,11 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                     guidance=7.0,
                     seed=1,
                     use_group_adv=True,
-                    num_generations=12,  # 一个 prompt 生成多少个样本
+                    num_generations=12,  # 一个 prompt 生成多少个样本，即 group size
                     init_same_noise=True,
                     timestep_fraction=0.6,
-                    rollout_num_batches=4,  # 一次 rollout 多少个 batch，注意这里实际值要乘以 GPU 数量
-                    num_updates=2,  # 用一组 rollout 训练多少轮
+                    rollout_num_batches=2,  # 一次 rollout 多少个 batch，注意这里实际值要乘以 GPU 数量再乘以 batchsize 才得到 prompts per iter
+                    num_updates=4,  # 用一组 rollout 训练多少轮
                     clip_range=1e-4,
                     adv_clip_max=5.0,
                 ),
@@ -253,7 +257,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
         ),
         dataloader_train=dict(
             # NOTE: GRPO online rollout 非常吃算力，先用更小 batch 打通
-            batch_size=1,
+            batch_size=2,
             sampler=dict(
                 dataset=dict(fps_downsample_ratio=1, video_size=[256, 320]),
             ),

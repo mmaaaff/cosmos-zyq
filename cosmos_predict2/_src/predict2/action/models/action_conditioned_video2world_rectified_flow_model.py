@@ -109,7 +109,7 @@ class ActionVideo2WorldModelRectifiedFlow(Text2WorldModelRectifiedFlow):
         input_key = self.input_image_key if is_image_batch else self.input_data_key
         if n_sample is None:
             n_sample = data_batch[input_key].shape[0]
-        if state_shape is None:  # 推导 latent 空间形状 state_shap
+        if state_shape is None:  # 推导 latent 空间形状 state_shape
             _T, _H, _W = data_batch[input_key].shape[-3:]
             state_shape = [
                 self.config.state_ch,

@@ -3,7 +3,7 @@
   "input_root": "assets/action_conditioned/basic/bridge",
   "input_json_sub_folder": "annotation/test",
   "save_root": "outputs/action_conditioned/basic",
-  "guidance": 0,
+  "guidance": 7,
   "resolution": "256,320",
   "camera_id": 0,
   "start": 0,

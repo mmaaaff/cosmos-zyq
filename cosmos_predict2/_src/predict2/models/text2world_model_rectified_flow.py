@@ -698,7 +698,7 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
         is_image_batch = self.is_image_batch(data_batch)
 
         # Latent state
-        raw_state = data_batch[self.input_image_key if is_image_batch else self.input_data_key]
+        raw_state = data_batch[self.input_image_key if is_image_batch else self.input_data_key]  # self.input_data_key can be "video"
         latent_state = self.encode(raw_state).contiguous().float()
 
         # Condition
