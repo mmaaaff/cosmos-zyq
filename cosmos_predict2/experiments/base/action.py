@@ -177,6 +177,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
         trainer=dict(
             straggler_detection=dict(enabled=False),
             logging_iter=10,
+            resume_iteration=0,  # 强制 trainer_grpo 的 iteration 起点
             # NOTE: GRPO 训练通常更慢；可以视情况把采样 callback 频率调低
             callbacks=dict(
                 grad_clip=dict(

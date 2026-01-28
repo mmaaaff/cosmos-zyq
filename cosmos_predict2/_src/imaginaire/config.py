@@ -387,6 +387,9 @@ class TrainerConfig:
     cudnn: CuDNNConfig = attrs.field(factory=CuDNNConfig)
     # Set the random seed.
     seed: int = 0
+    # 用来明确指定记录从那个 iteration 开始，只会影响 trainer_grpo 里面初始化部分 iteration 的取值
+    # - `None` (default) means "use the iteration returned by the checkpointer".
+    resume_iteration: int | None = None
     # Gradient scaler arguments (for torch.amp.GradScaler).
     grad_scaler_args: dict = attrs.field(factory=lambda: dict(enabled=False))
     # Maximum number of iterations to train the model.
