@@ -152,7 +152,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
         job=dict(
             project="cosmos_predict2_action_conditioned_grpo",
             group="cosmos_predict_v2p5",
-            name="2b_bridge_action_conditioned_grpo",
+            name="2b_bridge_action_conditioned_grpo_1",
             wandb_reuse_id=False,
             wandb_resume="never",
         ),
@@ -248,7 +248,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                     rollout_num_batches=2,  # 一次 rollout 多少个 batch，注意这里实际值要乘以 GPU 数量再乘以 batchsize 才得到 prompts per iter
                     num_updates=4,  # 用一组 rollout 训练多少轮
                     clip_range=1e-4,
-                    adv_clip_max=5.0,
+                    adv_clip_max=100.0,
                 ),
                 reward=dict(
                     # NOTE: reward model 还未定稿，先用 dummy reward 打通链路
