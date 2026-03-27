@@ -252,7 +252,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                 ),
                 reward=dict(
                     # NOTE: reward model 还未定稿，先用 dummy reward 打通链路
-                    type="ssim",
+                    type="vjepa2",
                 ),
             ),
         ),

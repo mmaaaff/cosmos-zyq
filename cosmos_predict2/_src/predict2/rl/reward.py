@@ -263,3 +263,202 @@ class SSIM_Reward(BaseRewardModel):
         image_np = np.clip(image_np, 0, 1)
         
         plt.imsave(filepath, image_np)
+
+
+class VJEPA2Reward(BaseRewardModel):
+    """
+    使用普通版 V-JEPA2 encoder 的 sliding-window 特征相似度作为 reward。
+
+    设计约定：
+    - 输入：`inp.video` 为生成视频，`inp.metadata["gt_video"]` 为 GT 视频。
+    - 只使用 encoder：与官方 demo 对齐，调用 `AutoModel.get_vision_features(...)`。
+    - reward 计算方式：
+      1) 沿时间维用长度 `num_frames`、步长 `stride` 的窗口滑过视频；
+      2) 每个窗口用 V-JEPA2 encoder 提取 patch-wise features；
+      3) 对每个窗口的 feature 做 token 平均池化，得到窗口级 embedding；
+      4) 对对应窗口计算 cosine similarity；
+      5) 对所有窗口的 cosine similarity 取平均，输出 shape `[B]`。
+    """
+
+    def __init__(
+        self,
+        model_name: str = "facebook/vjepa2-vitg-fpc64-384",
+        num_frames: int = 64,
+        image_size: int = 384,
+        stride: int = 1,
+    ):
+        super().__init__()
+        self.model_name = model_name
+        self.num_frames = int(num_frames)
+        self.image_size = int(image_size)
+        self.stride = int(stride)
+        if self.num_frames <= 0:
+            raise ValueError(f"VJEPA2Reward expects num_frames > 0, got {self.num_frames}")
+        if self.stride <= 0:
+            raise ValueError(f"VJEPA2Reward expects stride > 0, got {self.stride}")
+
+        from transformers import AutoModel, AutoVideoProcessor
+
+        self._model = AutoModel.from_pretrained(self.model_name)
+        self._processor = AutoVideoProcessor.from_pretrained(self.model_name)
+        self._model.eval()
+        for p in self._model.parameters():
+            p.requires_grad_(False)
+        # 优先以 processor 的 crop size 为准，避免手工配置与 checkpoint 不一致。
+        crop_size = getattr(self._processor, "crop_size", None)
+        if isinstance(crop_size, dict) and "height" in crop_size:
+            self.image_size = int(crop_size["height"])
+
+    def _to_bcthw(self, x: torch.Tensor, *, name: str) -> torch.Tensor:
+        """
+        将输入统一为 [B, C, T, H, W]。
+        """
+        if x.ndim == 4:
+            # [B, C, H, W] -> [B, C, 1, H, W]
+            return x.unsqueeze(2).contiguous()
+        if x.ndim != 5:
+            raise ValueError(
+                f"VJEPA2Reward expects {name} to be 4D/5D tensor, "
+                f"got shape={tuple(x.shape)}"
+            )
+        # 兼容 [B, T, C, H, W]
+        if x.shape[1] not in (1, 3) and x.shape[2] in (1, 3):
+            x = x.permute(0, 2, 1, 3, 4).contiguous()
+        return x
+
+    def _to_01(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        数值映射到 [0, 1]，兼容 uint8 / [-1,1] / [0,1]。
+        """
+        if x.dtype == torch.uint8:
+            return x.to(torch.float32) / 255.0
+        x = x.to(torch.float32)
+        if torch.isfinite(x).all() and x.min() < -1e-3:
+            x = (x + 1.0) * 0.5
+        return x.clamp(0.0, 1.0)
+
+    def _ensure_rgb(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        统一到 3 通道，便于送入 V-JEPA2 processor。
+        """
+        _, c, _, _, _ = x.shape
+        if c == 3:
+            return x
+        if c == 1:
+            return x.repeat(1, 3, 1, 1, 1)
+        if c > 3:
+            return x[:, :3].contiguous()
+        raise ValueError(f"VJEPA2Reward expects channel count in {{1,3}} or >=3, got {c}")
+
+    def _sample_frames(self, x: torch.Tensor, target_t: Optional[int] = None) -> torch.Tensor:
+        """
+        时间维重采样到固定帧数。短视频时用它补成单窗口。
+        """
+        target_t = self.num_frames if target_t is None else int(target_t)
+        _, _, t, _, _ = x.shape
+        if t == target_t:
+            return x
+        # 线性等间隔采样，允许重复索引（当 t < target_t）。
+        idx = torch.linspace(0, t - 1, steps=target_t, device=x.device)
+        idx = idx.round().long().clamp(0, t - 1)
+        return x.index_select(dim=2, index=idx)
+
+    def _get_model_device(self) -> torch.device:
+        return next(self._model.parameters()).device
+
+    def _ensure_model_device(self, target_device: torch.device) -> None:
+        """
+        按需把 V-JEPA2 移到目标设备，避免在 CPU 上做推理。
+        """
+        current = self._get_model_device()
+        if current != target_device:
+            self._model.to(device=target_device)
+
+    def _build_sliding_windows(self, video_bcthw: torch.Tensor) -> torch.Tensor:
+        """
+        构造 sliding windows，输出形状 `[B, N, C, F, H, W]`。N 为窗口数，F 为窗口长度。
+        """
+        _, _, t, _, _ = video_bcthw.shape
+        if t < self.num_frames:
+            # 短视频退化为单窗口，并重采样到模型要求的帧数。
+            return self._sample_frames(video_bcthw).unsqueeze(1)
+
+        windows = video_bcthw.unfold(dimension=2, size=self.num_frames, step=self.stride)
+        # unfold 后形状为 [B, C, N, H, W, F]，这里调整为 [B, N, C, F, H, W]。
+        windows = windows.permute(0, 2, 1, 5, 3, 4).contiguous()
+        return windows
+
+    def _pool_encoder_features(self, feats: torch.Tensor) -> torch.Tensor:
+        """
+        根据 `vjepa2/src/models/vision_transformer.py`，encoder `forward()` 最终返回 shape `[B, N, D]` 的 token 序列。
+        """
+        if feats.ndim != 3:
+            raise RuntimeError(
+                "VJEPA2Reward expects get_vision_features() to return patch-wise features "
+                f"with shape [B, N, D], got {tuple(feats.shape)}"
+            )
+        return feats.mean(dim=1)
+
+    def _prepare_processor_batch(self, windows_bncfhw: torch.Tensor) -> list[torch.Tensor]:
+        """
+        将窗口张量转换为 processor 期望的 `T x C x H x W` clip 列表。
+        """
+        flat = windows_bncfhw.reshape(-1, *windows_bncfhw.shape[2:])  # [B*N, C, F, H, W]
+        flat = self._ensure_rgb(flat)
+        flat = (self._to_01(flat) * 255.0).round().to(torch.uint8)
+        # 逐窗口转为 `T x C x H x W`，与本地 demo 的调用形式保持一致。
+        return [clip.permute(1, 0, 2, 3).cpu() for clip in flat]
+
+    def _encode_video_windows(self, video_bcthw: torch.Tensor) -> torch.Tensor:
+        """
+        编码所有窗口，输出形状 `[B, N, D]`。
+        """
+        windows = self._build_sliding_windows(video_bcthw)  # [B, N, C, F, H, W]
+        b, n = windows.shape[:2]
+        processor_inputs = self._prepare_processor_batch(windows)
+        model_device = self._get_model_device()
+        model_inputs = self._processor(processor_inputs, return_tensors="pt")
+        if "pixel_values_videos" not in model_inputs:
+            raise RuntimeError("VJEPA2Reward expects AutoVideoProcessor to return 'pixel_values_videos'.")
+        pixel_values = model_inputs["pixel_values_videos"].to(device=model_device, dtype=torch.float32)
+
+        with torch.no_grad():
+            if not hasattr(self._model, "get_vision_features"):
+                raise RuntimeError("VJEPA2Reward requires a V-JEPA2 AutoModel with get_vision_features().")
+            feats = self._model.get_vision_features(pixel_values)
+
+        pooled = self._pool_encoder_features(feats)  # [B*N, D]
+        return pooled.view(b, n, -1)
+
+    def forward(self, inp: RewardInput) -> torch.Tensor:
+        if inp.video is None:
+            raise ValueError("VJEPA2Reward requires inp.video (pred video tensor).")
+        if "gt_video" not in inp.metadata or inp.metadata["gt_video"] is None:
+            raise ValueError("VJEPA2Reward requires inp.metadata['gt_video'].")
+
+        pred = inp.video
+        ref = inp.metadata["gt_video"]
+
+        pred = self._to_bcthw(pred, name="inp.video")
+        ref = self._to_bcthw(ref, name="inp.metadata['gt_video']")
+        if pred.shape[0] != ref.shape[0]:
+            raise ValueError(
+                f"VJEPA2Reward expects pred/ref to have the same batch size, got {pred.shape[0]} vs {ref.shape[0]}"
+            )
+        if pred.shape[2] != ref.shape[2]:
+            raise ValueError(
+                f"VJEPA2Reward expects pred/ref to have the same number of frames for aligned windows, "
+                f"got {pred.shape[2]} vs {ref.shape[2]}"
+            )
+        self._ensure_model_device(pred.device)
+
+        z_pred = self._encode_video_windows(pred)  # [B, N, D]
+        z_ref = self._encode_video_windows(ref)    # [B, N, D]
+        if z_pred.shape != z_ref.shape:
+            raise RuntimeError(
+                f"VJEPA2Reward expects pred/ref window embeddings to align, got {tuple(z_pred.shape)} vs {tuple(z_ref.shape)}"
+            )
+
+        window_reward = F.cosine_similarity(z_pred, z_ref, dim=-1)  # [B, N]
+        reward = window_reward.mean(dim=1)  # [B]
+        return reward.to(device=pred.device, dtype=torch.float32)
