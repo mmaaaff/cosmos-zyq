@@ -23,7 +23,12 @@ from cosmos_predict2._src.predict2.action.models.action_conditioned_video2world_
     Video2WorldModelRectifiedFlowConfig,
 )
 from cosmos_predict2._src.predict2.rl.grpo_sde_sampler import grpo_sde_step
-from cosmos_predict2._src.predict2.rl.reward import RewardInput, DummyRewardModel, SSIM_Reward
+from cosmos_predict2._src.predict2.rl.reward import (
+    RewardInput,
+    DummyRewardModel,
+    SSIM_Reward,
+    VJEPA2Reward,
+)
 
 
 def _dist_is_initialized() -> bool:
@@ -114,7 +119,12 @@ class _GrpoHyperParams:
 @dataclass
 class _RewardParams:
     # Placeholder reward type, e.g. "dummy"
-    type: str = "dummy"
+    type: str = "vjepa2"
+    # V-JEPA2 reward params
+    model_name: str = "facebook/vjepa2-vitg-fpc64-384"
+    num_frames: int = 64
+    image_size: int = 384
+    stride: int = 1
 
 
 @dataclass
@@ -161,16 +171,27 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
 
     def __init__(self, config: ActionVideo2WorldModelRectifiedFlowGRPOConfig):
         super().__init__(config)
-        # Reward model (placeholder). Real video reward can later be injected here via config.
-        if self.config.reward.type == "dummy":
+        rp = self._get_reward_params()
+        # Reward model selection.
+        if rp.type == "dummy":
             self._reward_model = DummyRewardModel()
-        elif self.config.reward.type == "ssim":
+        elif rp.type == "ssim":
             # Annotation:
             # - SSIM expects pixel-space tensors; we will decode latents to pixels when computing reward.
             # - Reference/GT video will be passed via RewardInput.metadata["gt_video"].
             self._reward_model = SSIM_Reward()
+        elif rp.type == "vjepa2":
+            # Annotation:
+            # - Use the standard V-JEPA2 encoder only.
+            # - Reward is the mean sliding-window cosine similarity between pred/gt encoder embeddings.
+            self._reward_model = VJEPA2Reward(
+                model_name=str(rp.model_name),
+                num_frames=int(rp.num_frames),
+                image_size=int(rp.image_size),
+                stride=int(rp.stride),
+            )
         else:
-            raise ValueError(f"Unknown reward type: {self.config.reward.type}")
+            raise ValueError(f"Unknown reward type: {rp.type}")
 
     # ----------------------------- utilities -----------------------------
     def _get_grpo_params(self) -> _GrpoHyperParams:

@@ -91,7 +91,12 @@ FSDP_RECTIFIED_FLOW_GRPO_CONFIG = dict(
                 clip_range=1e-4,
             ),
             reward=dict(
-                type="dummy",
+                type="vjepa2",
+                # V-JEPA2 encoder reward (sliding-window cosine similarity)
+                model_name="facebook/vjepa2-vitg-fpc64-384",
+                num_frames=64,
+                image_size=384,
+                stride=1,
             ),
         ),
         _recursive_=False,
