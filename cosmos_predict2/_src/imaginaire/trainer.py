@@ -487,6 +487,11 @@ class trainer_grpo(ImaginaireTrainer):
                             )
                         )
 
+                if self.config.trainer.distributed_parallelism == "ddp":
+                    model_ddp.module.unload_reward_model()
+                else:
+                    model_ddp.unload_reward_model()
+
                 # -------------------- Inner loop: multiple updates on same rollout --------------------
                 num_updates = int(getattr(getattr(model, "config", None), "grpo", {}).get("num_updates", 1))  # type: ignore[union-attr]
 
