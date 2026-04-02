@@ -299,8 +299,9 @@ class VJEPA2Reward(BaseRewardModel):
 
         from transformers import AutoModel, AutoVideoProcessor
 
-        self._model = AutoModel.from_pretrained(self.model_name)
-        self._processor = AutoVideoProcessor.from_pretrained(self.model_name)
+        self._model = AutoModel.from_pretrained(self.model_name, local_files_only=True)
+        self._processor = AutoVideoProcessor.from_pretrained(self.model_name, local_files_only=True)
+        self._model.to(torch.device("cuda", torch.cuda.current_device()))
         self._model.eval()
         for p in self._model.parameters():
             p.requires_grad_(False)
@@ -415,7 +416,7 @@ class VJEPA2Reward(BaseRewardModel):
         """
         windows = self._build_sliding_windows(video_bcthw)  # [B, N, C, F, H, W]
         b, n = windows.shape[:2]
-        processor_inputs = self._prepare_processor_batch(windows)
+        processor_inputs = self._prepare_processor_batch(windows)  # list of [F, C, H, W]
         model_device = self._get_model_device()
         model_inputs = self._processor(processor_inputs, return_tensors="pt")
         if "pixel_values_videos" not in model_inputs:

@@ -132,7 +132,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320 = LazyDict(
 )
 
 """
-torchrun --nproc_per_node=8 --master_port=12341 -m scripts.train \
+torchrun --nproc_per_node=4 --master_port=12341 -m scripts.train \
     --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config_grpo.py  \
     -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320_grpo ~dataloader_train.dataloaders \
     job.wandb_mode=offline
@@ -152,7 +152,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
         job=dict(
             project="cosmos_predict2_action_conditioned_grpo",
             group="cosmos_predict_v2p5",
-            name="2b_bridge_action_conditioned_grpo_1",
+            name="2b_bridge_action_conditioned_grpo_vjepa",
             wandb_reuse_id=False,
             wandb_resume="never",
         ),
@@ -245,7 +245,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                     num_generations=12,  # 一个 prompt 生成多少个样本，即 group size
                     init_same_noise=True,
                     timestep_fraction=0.6,
-                    rollout_num_batches=2,  # 一次 rollout 多少个 batch，注意这里实际值要乘以 GPU 数量再乘以 batchsize 才得到 prompts per iter
+                    rollout_num_batches=2,  # 一次 rollout 多少个 batch，注意这里实际值要乘以 GPU 数量再乘以 batch_size 才得到 prompts per iter
                     num_updates=4,  # 用一组 rollout 训练多少轮
                     clip_range=1e-4,
                     adv_clip_max=100.0,
@@ -257,8 +257,8 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
             ),
         ),
         dataloader_train=dict(
-            # NOTE: GRPO online rollout 非常吃算力，先用更小 batch 打通
-            batch_size=2,
+            # NOTE: GRPO online rollout 非常吃算力，先用小 batch_size
+            batch_size=1,
             sampler=dict(
                 dataset=dict(fps_downsample_ratio=1, video_size=[256, 320]),
             ),
