@@ -297,18 +297,41 @@ class VJEPA2Reward(BaseRewardModel):
         if self.stride <= 0:
             raise ValueError(f"VJEPA2Reward expects stride > 0, got {self.stride}")
 
+        # - V-JEPA2 按需加载（第一次算 reward 时加载），避免在 model update 阶段常驻占用显存。
+        # - 调用 `unload()` 后会释放模型对象；下次 forward 会自动重新加载。
+        self._model: Optional[torch.nn.Module] = None
+        self._processor = None
+
+    def _ensure_model_loaded(self) -> None:
+        if self._model is not None and self._processor is not None:
+            return
         from transformers import AutoModel, AutoVideoProcessor
 
-        self._model = AutoModel.from_pretrained(self.model_name, local_files_only=True)
-        self._processor = AutoVideoProcessor.from_pretrained(self.model_name, local_files_only=True)
-        self._model.to(torch.device("cuda", torch.cuda.current_device()))
-        self._model.eval()
-        for p in self._model.parameters():
+        model = AutoModel.from_pretrained(self.model_name)
+        processor = AutoVideoProcessor.from_pretrained(self.model_name)
+        model.eval()
+        for p in model.parameters():
             p.requires_grad_(False)
+
         # 优先以 processor 的 crop size 为准，避免手工配置与 checkpoint 不一致。
-        crop_size = getattr(self._processor, "crop_size", None)
+        crop_size = getattr(processor, "crop_size", None)
         if isinstance(crop_size, dict) and "height" in crop_size:
             self.image_size = int(crop_size["height"])
+
+        self._model = model
+        self._processor = processor
+
+    def unload(self, clear_cuda_cache: bool = True) -> None:
+        """
+        卸载 V-JEPA2 模型
+        """
+        # if self._model is not None:
+        #     # 显式迁回 CPU，避免模型被其他对象引用导致无法释放
+        #     self._model.to(device="cpu")
+        self._model = None
+        self._processor = None
+        if clear_cuda_cache and torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def _to_bcthw(self, x: torch.Tensor, *, name: str) -> torch.Tensor:
         """
@@ -365,12 +388,16 @@ class VJEPA2Reward(BaseRewardModel):
         return x.index_select(dim=2, index=idx)
 
     def _get_model_device(self) -> torch.device:
+        self._ensure_model_loaded()
+        assert self._model is not None
         return next(self._model.parameters()).device
 
     def _ensure_model_device(self, target_device: torch.device) -> None:
         """
         按需把 V-JEPA2 移到目标设备，避免在 CPU 上做推理。
         """
+        self._ensure_model_loaded()
+        assert self._model is not None
         current = self._get_model_device()
         if current != target_device:
             self._model.to(device=target_device)
@@ -416,7 +443,10 @@ class VJEPA2Reward(BaseRewardModel):
         """
         windows = self._build_sliding_windows(video_bcthw)  # [B, N, C, F, H, W]
         b, n = windows.shape[:2]
-        processor_inputs = self._prepare_processor_batch(windows)  # list of [F, C, H, W]
+        processor_inputs = self._prepare_processor_batch(windows)
+        self._ensure_model_loaded()
+        assert self._model is not None
+        assert self._processor is not None
         model_device = self._get_model_device()
         model_inputs = self._processor(processor_inputs, return_tensors="pt")
         if "pixel_values_videos" not in model_inputs:

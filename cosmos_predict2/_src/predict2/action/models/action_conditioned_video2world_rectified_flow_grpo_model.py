@@ -221,6 +221,10 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
                 setattr(rp, k, v)
         return rp
 
+    def unload_reward_model(self) -> None:
+        if hasattr(self._reward_model, "unload"):
+            self._reward_model.unload(clear_cuda_cache=True)
+
     def _maybe_repeat_batch_for_group(self, data_batch: Dict[str, torch.Tensor], num_generations: int) -> Dict[str, torch.Tensor]:
         """
         Repeat a batch along dim=0 for group-based GRPO (num_generations per prompt). 用一个 prompt 重复多次，作为一个 group。
