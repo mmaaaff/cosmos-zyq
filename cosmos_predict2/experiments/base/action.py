@@ -236,7 +236,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                 # ---------------- GRPO hyperparameters (placeholders) ----------------
                 # NOTE: 这些字段由 GRPO 模型的 Config 定义；在 dummy reward 阶段先给一个可跑通的默认值。
                 grpo=dict(
-                    num_steps=25,
+                    num_steps=10,
                     shift=5.0,  # Cosmos 原始代码 5.0，但感觉应该没用？因为似乎 use_kerras_sigma_at_inference 是 True（不过 grpo 这里我已经改成 flase）
                     eta=0.3,  # follows GRPO
                     guidance=7.0,
@@ -251,7 +251,6 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                     adv_clip_max=100.0,
                 ),
                 reward=dict(
-                    # NOTE: reward model 还未定稿，先用 dummy reward 打通链路
                     type="vjepa2",
                 ),
             ),
