@@ -135,7 +135,23 @@ ac_reason_embeddings_rectified_flow_2b_256_320 = LazyDict(
 torchrun --nproc_per_node=4 --master_port=12341 -m scripts.train \
     --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config_grpo.py  \
     -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320_grpo ~dataloader_train.dataloaders \
-    job.wandb_mode=offline
+    job.wandb_mode=offline \
+    2>&1 | tee /inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/train.log
+"""
+"""
+inference
+
+CHECKPOINTS_DIR=/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned_grpo/cosmos_predict_v2p5/2b_bridge_action_conditioned_grpo_vjepa/checkpoints
+CHECKPOINT_ITER=$(cat $CHECKPOINTS_DIR/latest_checkpoint.txt)
+CHECKPOINT_DIR=$CHECKPOINTS_DIR/$CHECKPOINT_ITER
+
+python ./scripts/convert_distcp_to_pt.py $CHECKPOINT_DIR/model $CHECKPOINT_DIR
+
+python examples/action_conditioned.py \
+-i assets/action_conditioned/basic/inference_params.json -o outputs/action_conditioned/basic \
+--config-file cosmos_predict2/_src/predict2/action/configs/action_conditioned/config.py \
+--checkpoint-path $CHECKPOINT_DIR/model_ema_bf16.pt \
+--experiment ac_reason_embeddings_rectified_flow_2b_256_320_grpo
 """
 ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
     dict(
@@ -152,7 +168,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
         job=dict(
             project="cosmos_predict2_action_conditioned_grpo",
             group="cosmos_predict_v2p5",
-            name="2b_bridge_action_conditioned_grpo_vjepa",
+            name="2b_bridge_action_conditioned_grpo_vjepa_1",
             wandb_reuse_id=False,
             wandb_resume="never",
         ),
@@ -236,7 +252,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                 # ---------------- GRPO hyperparameters (placeholders) ----------------
                 # NOTE: 这些字段由 GRPO 模型的 Config 定义；在 dummy reward 阶段先给一个可跑通的默认值。
                 grpo=dict(
-                    num_steps=10,
+                    num_steps=20,
                     shift=5.0,  # Cosmos 原始代码 5.0，但感觉应该没用？因为似乎 use_kerras_sigma_at_inference 是 True（不过 grpo 这里我已经改成 flase）
                     eta=0.3,  # follows GRPO
                     guidance=7.0,
@@ -245,7 +261,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                     num_generations=12,  # 一个 prompt 生成多少个样本，即 group size
                     init_same_noise=True,
                     timestep_fraction=0.6,
-                    rollout_num_batches=2,  # 一次 rollout 多少个 batch，注意这里实际值要乘以 GPU 数量再乘以 batch_size 才得到 prompts per iter
+                    rollout_num_batches=4,  # 一次 rollout 多少个 batch，注意这里实际值要乘以 GPU 数量再乘以 batch_size 才得到 prompts per iter
                     num_updates=4,  # 用一组 rollout 训练多少轮
                     clip_range=1e-4,
                     adv_clip_max=100.0,
