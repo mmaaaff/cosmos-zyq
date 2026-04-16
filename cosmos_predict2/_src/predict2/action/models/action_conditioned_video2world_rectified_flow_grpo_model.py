@@ -28,6 +28,7 @@ from cosmos_predict2._src.predict2.rl.reward import (
     DummyRewardModel,
     SSIM_Reward,
     VJEPA2Reward,
+    OpticalFlowReward,
 )
 
 
@@ -125,6 +126,20 @@ class _RewardParams:
     num_frames: int = 64
     image_size: int = 384
     stride: int = 1
+    # Optical flow reward params
+    estimator: str = "farneback"
+    score_mode: str = "robust"
+    resize_hw: tuple[int, int] | list[int] | None = (128, 160)
+    frame_stride: int = 1
+    max_frames: int = 0
+    eps: float = 1e-3
+    pyr_scale: float = 0.5
+    levels: int = 3
+    winsize: int = 15
+    iterations: int = 3
+    poly_n: int = 5
+    poly_sigma: float = 1.2
+    flags: int = 0
 
 
 @dataclass
@@ -189,6 +204,22 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
                 num_frames=int(rp.num_frames),
                 image_size=int(rp.image_size),
                 stride=int(rp.stride),
+            )
+        elif rp.type == "optical_flow":
+            self._reward_model = OpticalFlowReward(
+                estimator=str(rp.estimator),
+                score_mode=str(rp.score_mode),
+                resize_hw=rp.resize_hw,
+                frame_stride=int(rp.frame_stride),
+                max_frames=int(rp.max_frames),
+                eps=float(rp.eps),
+                pyr_scale=float(rp.pyr_scale),
+                levels=int(rp.levels),
+                winsize=int(rp.winsize),
+                iterations=int(rp.iterations),
+                poly_n=int(rp.poly_n),
+                poly_sigma=float(rp.poly_sigma),
+                flags=int(rp.flags),
             )
         else:
             raise ValueError(f"Unknown reward type: {rp.type}")

@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+import cv2
 import torch
 import torch.nn.functional as F
 
@@ -263,6 +264,152 @@ class SSIM_Reward(BaseRewardModel):
         image_np = np.clip(image_np, 0, 1)
         
         plt.imsave(filepath, image_np)
+
+
+class OpticalFlowReward(BaseRewardModel):
+    """
+    使用 OpenCV Farneback 稠密光流比较生成视频与 GT 视频的运动一致性。
+
+    设计约定：
+    - `inp.video` 为预测视频，`inp.metadata["gt_video"]` 为 GT 视频。
+    - 输入必须为 `[B, C, T, H, W]`。
+    - 第一版只支持 `estimator="farneback"`。
+    - 输出 reward shape 为 `[B]`，值越大越好；默认返回负误差。
+    """
+
+    def __init__(
+        self,
+        estimator: str = "farneback",
+        score_mode: str = "robust",
+        resize_hw: tuple[int, int] | list[int] | None = (128, 160),
+        frame_stride: int = 1,
+        max_frames: int = 0,
+        eps: float = 1e-3,
+        # Farneback 参数：
+        # - pyr_scale: 金字塔层间缩放比例，越小层数利用越细。
+        # - levels: 金字塔层数，越大越能覆盖大位移，但更慢。
+        # - winsize: 局部窗口大小，越大越平滑稳健，但会损失细节。
+        # - iterations: 每层迭代次数，越大收敛更充分但更慢。
+        # - poly_n: 多项式展开邻域大小，越大越平滑。
+        # - poly_sigma: 多项式展开高斯平滑强度，通常与 poly_n 配套调。
+        # - flags: OpenCV Farneback 标志位，0 表示默认行为。
+        pyr_scale: float = 0.5,
+        levels: int = 3,
+        winsize: int = 15,
+        iterations: int = 3,
+        poly_n: int = 5,
+        poly_sigma: float = 1.2,
+        flags: int = 0,
+    ):
+        super().__init__()
+        estimator = str(estimator).lower()
+        if estimator != "farneback":
+            raise ValueError(f"OpticalFlowReward only supports estimator='farneback', got {estimator}")
+        score_mode = str(score_mode).lower()
+        if score_mode not in {"robust", "mse"}:
+            raise ValueError(f"OpticalFlowReward score_mode must be 'robust' or 'mse', got {score_mode}")
+
+        self.estimator = estimator
+        self.score_mode = score_mode
+        self.resize_hw = tuple(resize_hw) if resize_hw is not None else None
+        self.frame_stride = max(int(frame_stride), 1)
+        self.max_frames = max(int(max_frames), 0)
+        self.eps = float(eps)
+        self.pyr_scale = float(pyr_scale)
+        self.levels = int(levels)
+        self.winsize = int(winsize)
+        self.iterations = int(iterations)
+        self.poly_n = int(poly_n)
+        self.poly_sigma = float(poly_sigma)
+        self.flags = int(flags)
+
+    def _to_bcthw(self, x: torch.Tensor, *, name: str) -> torch.Tensor:
+        if x.ndim != 5:
+            raise ValueError(f"OpticalFlowReward expects {name} to be [B,C,T,H,W], got shape={tuple(x.shape)}")
+        return x.contiguous()
+
+    def _to_01(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dtype == torch.uint8:
+            return x.to(torch.float32) / 255.0
+        x = x.to(torch.float32)
+        if torch.isfinite(x).all() and x.min() < -1e-3:
+            x = (x + 1.0) * 0.5
+        return x.clamp(0.0, 1.0)
+
+    def _preprocess_video(self, x: torch.Tensor) -> np.ndarray:
+        x = self._to_01(x)
+        if self.frame_stride > 1:
+            x = x[:, :, :: self.frame_stride]
+        if self.max_frames > 0:
+            x = x[:, :, : self.max_frames]
+        if self.resize_hw is not None:
+            target_h, target_w = self.resize_hw
+            b, c, t, _, _ = x.shape
+            x_bt = x.permute(0, 2, 1, 3, 4).reshape(b * t, c, x.shape[-2], x.shape[-1])
+            x_bt = F.interpolate(x_bt, size=(target_h, target_w), mode="bilinear", align_corners=False)
+            x = x_bt.reshape(b, t, c, target_h, target_w).permute(0, 2, 1, 3, 4).contiguous()
+
+        if x.shape[1] == 3:
+            r = x[:, 0]
+            g = x[:, 1]
+            b = x[:, 2]
+            x = (0.2989 * r + 0.5870 * g + 0.1140 * b).unsqueeze(1)
+        elif x.shape[1] != 1:
+            raise ValueError(f"OpticalFlowReward expects channel count 1 or 3, got {x.shape[1]}")
+
+        x = (x * 255.0).round().clamp(0.0, 255.0).to(torch.uint8)
+        return x.squeeze(1).cpu().numpy()
+
+    def _compute_farnebck_flow(self, prev_frame: np.ndarray, next_frame: np.ndarray) -> np.ndarray:
+        return cv2.calcOpticalFlowFarneback(
+            prev=prev_frame,
+            next=next_frame,
+            flow=None,
+            pyr_scale=self.pyr_scale,
+            levels=self.levels,
+            winsize=self.winsize,
+            iterations=self.iterations,
+            poly_n=self.poly_n,
+            poly_sigma=self.poly_sigma,
+            flags=self.flags,
+        )
+
+    def _score_flow_pair(self, pred_flow: np.ndarray, gt_flow: np.ndarray) -> float:
+        diff = pred_flow.astype(np.float32) - gt_flow.astype(np.float32)
+        if self.score_mode == "mse":
+            return float(np.mean(diff ** 2))
+        flow_err = np.sqrt(np.sum(diff ** 2, axis=-1) + self.eps ** 2)
+        return float(np.mean(flow_err))
+
+    def forward(self, inp: RewardInput) -> torch.Tensor:
+        if inp.video is None:
+            raise ValueError("OpticalFlowReward requires inp.video")
+        gt_video = inp.metadata.get("gt_video")
+        if gt_video is None:
+            raise ValueError("OpticalFlowReward requires inp.metadata['gt_video']")
+        if not isinstance(gt_video, torch.Tensor):
+            raise TypeError(f"OpticalFlowReward expects gt_video to be torch.Tensor, got {type(gt_video)}")
+
+        pred = self._to_bcthw(inp.video, name="inp.video")
+        gt = self._to_bcthw(gt_video, name="inp.metadata['gt_video']")
+        if pred.shape != gt.shape:
+            raise ValueError(f"OpticalFlowReward requires pred/ref to have same shape. pred={tuple(pred.shape)} ref={tuple(gt.shape)}")
+        if pred.shape[2] < 2:
+            raise ValueError(f"OpticalFlowReward requires at least 2 frames, got T={pred.shape[2]}")
+
+        pred_np = self._preprocess_video(pred.detach())
+        gt_np = self._preprocess_video(gt.detach())
+
+        rewards = []
+        for pred_video, gt_video_np in zip(pred_np, gt_np):
+            frame_scores = []
+            for t in range(pred_video.shape[0] - 1):
+                pred_flow = self._compute_farnebck_flow(pred_video[t], pred_video[t + 1])
+                gt_flow = self._compute_farnebck_flow(gt_video_np[t], gt_video_np[t + 1])
+                frame_scores.append(self._score_flow_pair(pred_flow, gt_flow))
+            rewards.append(-float(np.mean(frame_scores)))
+
+        return torch.tensor(rewards, device=pred.device, dtype=torch.float32)
 
 
 class VJEPA2Reward(BaseRewardModel):
