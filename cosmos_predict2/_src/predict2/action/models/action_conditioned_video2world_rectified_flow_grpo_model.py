@@ -25,6 +25,7 @@ from cosmos_predict2._src.predict2.action.models.action_conditioned_video2world_
 from cosmos_predict2._src.predict2.rl.grpo_sde_sampler import grpo_sde_step
 from cosmos_predict2._src.predict2.rl.reward import (
     RewardInput,
+    CoTrackerCenteredVelocityReward,
     DummyRewardModel,
     SSIM_Reward,
     VJEPA2Reward,
@@ -121,6 +122,16 @@ class _GrpoHyperParams:
 class _RewardParams:
     # Placeholder reward type, e.g. "dummy"
     type: str = "vjepa2"
+    # CoTracker centered velocity reward params
+    checkpoint_path: str = "checkpoints/cotracker/scaled_offline.pth"
+    input_resolution: tuple[int, int] | list[int] = (224, 224)
+    patch_size: int = 8
+    temporal_radius: int = 2
+    tau: float = 1.0
+    window_batch_size: int = 32
+    invisibility_penalty: float = 1.0
+    offline: bool = True
+    min_active_points: int = 16
     # V-JEPA2 reward params
     model_name: str = "facebook/vjepa2-vitg-fpc64-384"
     num_frames: int = 64
@@ -204,6 +215,20 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
                 num_frames=int(rp.num_frames),
                 image_size=int(rp.image_size),
                 stride=int(rp.stride),
+            )
+        elif rp.type == "cotracker_centered_velocity":
+            self._reward_model = CoTrackerCenteredVelocityReward(
+                checkpoint_path=str(rp.checkpoint_path),
+                input_resolution=rp.input_resolution,
+                patch_size=int(rp.patch_size),
+                temporal_radius=int(rp.temporal_radius),
+                tau=float(rp.tau),
+                window_batch_size=int(rp.window_batch_size),
+                score_mode=str(rp.score_mode),
+                eps=float(rp.eps),
+                min_active_points=int(rp.min_active_points),
+                invisibility_penalty=float(rp.invisibility_penalty),
+                offline=bool(rp.offline),
             )
         elif rp.type == "optical_flow":
             self._reward_model = OpticalFlowReward(
@@ -636,5 +661,4 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         )
         samples = self.collect_rollout_and_rewards(data_batch)
         return self.compute_grpo_loss(samples, update_seed=int(iteration))
-
 

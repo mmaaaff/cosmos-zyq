@@ -412,6 +412,285 @@ class OpticalFlowReward(BaseRewardModel):
         return torch.tensor(rewards, device=pred.device, dtype=torch.float32)
 
 
+class CoTrackerCenteredVelocityReward(BaseRewardModel):
+    """
+    使用 centered CoTracker 稀疏速度场比较生成视频与 GT 视频的运动一致性。
+
+    定义：
+    - 设 `r = temporal_radius`。
+    - 对每个中心帧 t，取长度 `2r + 1` 的局部窗口 `[t-r, ..., t, ..., t+r]`。
+    - 以中心帧上的规则网格点为 query，通过 CoTracker 同时跟踪到窗口左右端点。
+    - 位移向量定义为 `delta = x_{t+r} - x_{t-r}`，速度定义为 `||delta|| / (2r)`，单位为 pixel/frame。
+    - active mask 仅由 GT 决定：左右端点都可见，且 `speed_gt > tau`。
+    - reward 为 active points 上 `pred delta` 与 `gt delta` 的负误差均值。
+    """
+
+    def __init__(
+        self,
+        checkpoint_path: str,
+        input_resolution: tuple[int, int] | list[int] = (224, 224),
+        patch_size: int = 8,
+        temporal_radius: int = 2,
+        tau: float = 1.0,
+        window_batch_size: int = 32,
+        score_mode: str = "charbonnier",
+        eps: float = 1e-3,
+        min_active_points: int = 16,
+        invisibility_penalty: float = 1.0,
+        offline: bool = True,
+    ):
+        super().__init__()
+        if not checkpoint_path:
+            raise ValueError("CoTrackerCenteredVelocityReward requires a non-empty checkpoint_path.")
+
+        score_mode = str(score_mode).lower()
+        if score_mode not in {"charbonnier", "mse"}:
+            raise ValueError(
+                "CoTrackerCenteredVelocityReward score_mode must be 'charbonnier' or 'mse', "
+                f"got {score_mode}"
+            )
+
+        if temporal_radius < 1:
+            raise ValueError(f"temporal_radius must be >= 1, got {temporal_radius}")
+        if patch_size < 1:
+            raise ValueError(f"patch_size must be >= 1, got {patch_size}")
+        if window_batch_size < 1:
+            raise ValueError(f"window_batch_size must be >= 1, got {window_batch_size}")
+
+        input_resolution = tuple(int(v) for v in input_resolution)
+        if len(input_resolution) != 2:
+            raise ValueError(f"input_resolution must be a pair of ints, got {input_resolution}")
+        if input_resolution[0] % patch_size != 0 or input_resolution[1] % patch_size != 0:
+            raise ValueError(
+                f"patch_size={patch_size} must divide input_resolution={input_resolution}"
+            )
+
+        self.checkpoint_path = str(checkpoint_path)
+        self.input_resolution = input_resolution
+        self.patch_size = int(patch_size)
+        self.temporal_radius = int(temporal_radius)
+        self.tau = float(tau)
+        self.window_batch_size = int(window_batch_size)
+        self.score_mode = score_mode
+        self.eps = float(eps)
+        self.min_active_points = int(min_active_points)
+        self.invisibility_penalty = float(invisibility_penalty)
+        self.offline = bool(offline)
+
+        self._model: Optional[torch.nn.Module] = None
+        self._grid_points_cpu: Optional[torch.Tensor] = None
+
+    def _ensure_model_loaded(self) -> None:
+        if self._model is not None:
+            return
+
+        if not os.path.exists(self.checkpoint_path):
+            raise FileNotFoundError(
+                "CoTrackerCenteredVelocityReward expected a local checkpoint_path, "
+                f"but the file was not found: {self.checkpoint_path}"
+            )
+
+        from cotracker.predictor import CoTrackerPredictor
+
+        model = CoTrackerPredictor(
+            checkpoint=self.checkpoint_path,
+            offline=self.offline,
+            window_len=(2 * self.temporal_radius + 1),
+        )
+        model.eval()
+        for p in model.parameters():
+            p.requires_grad_(False)
+        self._model = model
+
+    def _get_model_device(self) -> torch.device:
+        self._ensure_model_loaded()
+        assert self._model is not None
+        return next(self._model.parameters()).device
+
+    def _ensure_model_device(self, target_device: torch.device) -> None:
+        self._ensure_model_loaded()
+        assert self._model is not None
+        current = self._get_model_device()
+        if current != target_device:
+            self._model.to(device=target_device)
+
+    def unload(self, clear_cuda_cache: bool = True) -> None:
+        self._model = None
+        if clear_cuda_cache and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def _to_bcthw(self, x: torch.Tensor, *, name: str) -> torch.Tensor:
+        if x.ndim == 4:
+            return x.unsqueeze(2).contiguous()
+        if x.ndim != 5:
+            raise ValueError(
+                f"CoTrackerCenteredVelocityReward expects {name} to be 4D/5D tensor, got shape={tuple(x.shape)}"
+            )
+        if x.shape[1] not in (1, 3) and x.shape[2] in (1, 3):
+            x = x.permute(0, 2, 1, 3, 4).contiguous()
+        return x
+
+    def _to_01(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dtype == torch.uint8:
+            return x.to(torch.float32) / 255.0
+        x = x.to(torch.float32)
+        if torch.isfinite(x).all() and x.min() < -1e-3:
+            x = (x + 1.0) * 0.5
+        return x.clamp(0.0, 1.0)
+
+    def _ensure_rgb(self, x: torch.Tensor) -> torch.Tensor:
+        _, c, _, _, _ = x.shape
+        if c == 3:
+            return x
+        if c == 1:
+            return x.repeat(1, 3, 1, 1, 1)
+        if c > 3:
+            return x[:, :3].contiguous()
+        raise ValueError(f"CoTrackerCenteredVelocityReward expects 1 or 3 channels, got {c}")
+
+    def _preprocess_video(self, x: torch.Tensor) -> torch.Tensor:
+        x = self._ensure_rgb(self._to_01(self._to_bcthw(x, name="video")))  # [B, C, T, H, W], RGB in [0, 1]
+        b, c, t, h, w = x.shape
+        target_h, target_w = self.input_resolution
+        if (h, w) != (target_h, target_w):
+            x_bt = x.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)  # [B*T, C, H, W]
+            x_bt = F.interpolate(x_bt, size=(target_h, target_w), mode="bilinear", align_corners=False)
+            x = x_bt.reshape(b, t, c, target_h, target_w).permute(0, 2, 1, 3, 4).contiguous()  # [B, C, T, target_h, target_w]
+
+        # DreamVLA 的 CoTracker 预处理直接使用 float32 的 [0, 255] 像素值。
+        return x.permute(0, 2, 1, 3, 4).contiguous() * 255.0  # [B, T, C, H, W]
+
+    def _build_centered_windows(self, video_btchw: torch.Tensor) -> torch.Tensor:
+        window_len = 2 * self.temporal_radius + 1
+        _, t, _, _, _ = video_btchw.shape
+        if t < window_len:
+            raise ValueError(
+                f"CoTrackerCenteredVelocityReward requires T >= {window_len} for temporal_radius={self.temporal_radius}, got T={t}"
+            )
+        windows = video_btchw.unfold(dimension=1, size=window_len, step=1)  # [B, T, C, H, W] -> [B, A, C, H, W, window_len], A = T - window_len + 1
+        return windows.permute(0, 1, 5, 2, 3, 4).contiguous()  # [B, A, window_len, C, H, W]
+
+    def _get_grid_points(self, device: torch.device) -> torch.Tensor:
+        if self._grid_points_cpu is None:
+            h, w = self.input_resolution
+            y_centers = torch.arange(self.patch_size // 2, h, self.patch_size, dtype=torch.float32)
+            x_centers = torch.arange(self.patch_size // 2, w, self.patch_size, dtype=torch.float32)
+            grid_y, grid_x = torch.meshgrid(y_centers, x_centers, indexing="ij")
+            points = torch.stack([grid_x, grid_y], dim=-1).reshape(1, -1, 2) # [1, N, 2]
+            self._grid_points_cpu = points.contiguous()
+        return self._grid_points_cpu.to(device=device)
+
+    def _build_queries(self, batch_size: int, device: torch.device) -> torch.Tensor:
+        grid_points = self._get_grid_points(device=device).expand(batch_size, -1, -1)  # [B, N, 2]
+        query_frame = torch.full(
+            (batch_size, grid_points.shape[1], 1),
+            fill_value=float(self.temporal_radius),
+            device=device,
+            dtype=grid_points.dtype,  # query_frame 就是在输入视频的那一帧建网格
+        )  # [B, N, 1], 值全等于 temporal_radius
+        return torch.cat([query_frame, grid_points], dim=-1)  # [B, N, 3]
+
+    def _run_tracker(self, video_btnchw: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # video_btnchw: [B_windows, window_len, C, H, W]
+        self._ensure_model_device(video_btnchw.device)
+        assert self._model is not None
+
+        queries = self._build_queries(batch_size=video_btnchw.shape[0], device=video_btnchw.device)  # [B_windows, N, 3]
+
+        tracks_all = []  # list[[chunk, window_len, N, 2]]
+        visibility_all = []  # list[[chunk, window_len, N]]
+        with torch.no_grad():
+            for start in range(0, video_btnchw.shape[0], self.window_batch_size):
+                end = min(start + self.window_batch_size, video_btnchw.shape[0])
+                tracks_batch, visibility_batch = self._model(
+                    video_btnchw[start:end],
+                    queries=queries[start:end],  # (window_batch_size, N, 3)
+                    backward_tracking=True,
+                )
+                tracks_all.append(tracks_batch.to(dtype=torch.float32))  # [chunk, window_len, N, 2]
+                visibility_all.append(visibility_batch.to(dtype=torch.bool))  # [chunk, window_len, N]
+
+        return torch.cat(tracks_all, dim=0), torch.cat(visibility_all, dim=0)  # [B_windows, window_len, N, 2], [B_windows, window_len, N]
+
+    def _compute_point_error(self, delta_pred: torch.Tensor, delta_gt: torch.Tensor) -> torch.Tensor:
+        diff = delta_pred - delta_gt
+        if self.score_mode == "mse":
+            return torch.sum(diff * diff, dim=-1)
+        return torch.sqrt(torch.sum(diff * diff, dim=-1) + self.eps**2)
+
+    def forward(self, inp: RewardInput) -> torch.Tensor:
+        if inp.video is None:
+            raise ValueError("CoTrackerCenteredVelocityReward requires inp.video")
+        gt_video = inp.metadata.get("gt_video")
+        if gt_video is None:
+            raise ValueError("CoTrackerCenteredVelocityReward requires inp.metadata['gt_video']")
+        if not isinstance(gt_video, torch.Tensor):
+            raise TypeError(
+                f"CoTrackerCenteredVelocityReward expects gt_video to be torch.Tensor, got {type(gt_video)}"
+            )
+
+        pred = self._preprocess_video(inp.video)  # [B, T, C, H, W]
+        gt = self._preprocess_video(gt_video)  # [B, T, C, H, W]
+        if pred.shape[0] != gt.shape[0]:
+            raise ValueError(
+                f"CoTrackerCenteredVelocityReward expects pred/ref to have the same batch size, got {pred.shape[0]} vs {gt.shape[0]}"
+            )
+        if pred.shape[1] != gt.shape[1]:
+            raise ValueError(
+                f"CoTrackerCenteredVelocityReward expects pred/ref to have the same number of frames, got {pred.shape[1]} vs {gt.shape[1]}"
+            )
+
+        pred_windows = self._build_centered_windows(pred)  # [B, A, window_len, C, H, W]
+        gt_windows = self._build_centered_windows(gt)  # [B, A, window_len, C, H, W]
+        b, num_anchors, window_len = pred_windows.shape[:3]
+
+        pred_tracks, pred_visibility = self._run_tracker(
+            pred_windows.reshape(b * num_anchors, window_len, *pred_windows.shape[3:])
+        )  # [B*A, window_len, N, 2], [B*A, window_len, N]
+        gt_tracks, gt_visibility = self._run_tracker(
+            gt_windows.reshape(b * num_anchors, window_len, *gt_windows.shape[3:])
+        )  # [B*A, window_len, N, 2], [B*A, window_len, N]
+
+        left_idx = 0
+        right_idx = 2 * self.temporal_radius
+        duration = float(2 * self.temporal_radius)
+
+        delta_pred = pred_tracks[:, right_idx] - pred_tracks[:, left_idx]  # [B*A, N, 2]
+        delta_gt = gt_tracks[:, right_idx] - gt_tracks[:, left_idx]  # [B*A, N, 2]
+
+        gt_visible = gt_visibility[:, left_idx] & gt_visibility[:, right_idx]  # [B*A, N]
+        pred_visible = pred_visibility[:, left_idx] & pred_visibility[:, right_idx]  # [B*A, N]
+        speed_gt = torch.sqrt(torch.sum(delta_gt * delta_gt, dim=-1) + self.eps**2) / duration  # [B*A, N]
+
+        active_mask = gt_visible & (speed_gt > self.tau)  # [B*A, N]
+        if self.min_active_points > 0:
+            # 如果 active_mask 中 active 的点数小于 min_active_points，则使用 gt_visible 作为 active_mask，即不进行阈值筛选
+            fallback_mask = gt_visible  # [B*A, N]
+            use_fallback = active_mask.sum(dim=-1) < self.min_active_points  # [B*A]
+            active_mask = torch.where(use_fallback.unsqueeze(-1), fallback_mask, active_mask)  # [B*A, N]
+
+        point_error = self._compute_point_error(delta_pred, delta_gt)  # [B*A, N]
+        if self.invisibility_penalty > 0.0:
+            point_error = point_error + self.invisibility_penalty * (~pred_visible).to(point_error.dtype)  # [B*A, N]
+
+        active_mask_f = active_mask.to(dtype=point_error.dtype)  # [B*A, N]
+        valid_anchor = active_mask.any(dim=-1)  # [B*A], 即各个 anchor 是否有效（有至少一个 active 点）
+        anchor_denom = active_mask_f.sum(dim=-1).clamp_min(1.0)  # [B*A], clamp_min 是因为否则无效 anchor 会出现除以 0
+        # 对每个 anchor，计算所有 active 点的 point_error 的平均值
+        anchor_reward = -(point_error * active_mask_f).sum(dim=-1) / anchor_denom  # [B*A]
+        anchor_reward = torch.where(valid_anchor, anchor_reward, torch.zeros_like(anchor_reward))  # [B*A]
+
+        anchor_reward = anchor_reward.view(b, num_anchors)  # [B, A]
+        valid_anchor = valid_anchor.view(b, num_anchors)  # [B, A]
+        valid_anchor_f = valid_anchor.to(dtype=anchor_reward.dtype)  # [B, A]
+
+        valid_sample = valid_anchor.any(dim=-1)  # [B], 即各个 sample 是否有效（有至少一个有效 anchor）
+        sample_denom = valid_anchor_f.sum(dim=-1).clamp_min(1.0)  # [B], clamp_min 是因为否则无效 sample 会出现除以 0
+        reward = (anchor_reward * valid_anchor_f).sum(dim=-1) / sample_denom  # [B]
+        reward = torch.where(valid_sample, reward, torch.zeros_like(reward))  # [B]
+        return reward.to(dtype=torch.float32, device=inp.video.device)
+
+
 class VJEPA2Reward(BaseRewardModel):
     """
     使用普通版 V-JEPA2 encoder 的 sliding-window 特征相似度作为 reward。
