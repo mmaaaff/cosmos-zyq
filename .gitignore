@@ -209,5 +209,5 @@ cython_debug/
 !assets/**/*.mp4
 
 .sii
-/vjepa2/
+vjepa2/
 CLAUDE.md
