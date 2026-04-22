@@ -8,13 +8,15 @@ Annotation:
 
 from __future__ import annotations
 
+import collections.abc as abc
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 import cv2
 import torch
 import torch.nn.functional as F
 
+from cosmos_predict2._src.imaginaire.lazy_config import instantiate as lazy_instantiate
 
 import numpy as np
 import os
@@ -47,6 +49,9 @@ class BaseRewardModel(torch.nn.Module):
     def forward(self, inp: RewardInput) -> torch.Tensor:  # pragma: no cover
         raise NotImplementedError
 
+    def get_last_metrics(self) -> Dict[str, torch.Tensor]:
+        return {}
+
 
 class DummyRewardModel(BaseRewardModel):
     """
@@ -68,6 +73,95 @@ class DummyRewardModel(BaseRewardModel):
             raise ValueError("DummyRewardModel requires at least one of: video/action/text to infer batch size.")
 
         return torch.zeros((batch_size,), device=device, dtype=torch.float32)
+
+
+class CompositeRewardModel(BaseRewardModel):
+    """
+    Combine multiple reward models with a weighted sum.
+
+    Each component config must have:
+    - `weight`: scalar multiplier
+    - `reward`: LazyDict or BaseRewardModel instance
+    """
+
+    def __init__(
+        self,
+        components: Mapping[str, Mapping[str, Any]],
+        record_component_metrics: bool = True,
+    ):
+        super().__init__()
+        if not isinstance(components, abc.Mapping):
+            raise TypeError(f"CompositeRewardModel components must be a mapping, got {type(components)}")
+        if len(components) == 0:
+            raise ValueError("CompositeRewardModel requires at least one reward component.")
+
+        reward_models: dict[str, BaseRewardModel] = {}
+        reward_weights: dict[str, float] = {}
+
+        for name, component_cfg in components.items():
+            # 每个 component 都要是 mapping, 且必须包含 weight 和 reward 这两个 key, 其中 reward 键对应的值应该是一个 reward 实例或者一个 lazedict
+            if not isinstance(component_cfg, abc.Mapping):
+                raise TypeError(
+                    f"CompositeRewardModel component '{name}' must be a mapping, got {type(component_cfg)}"
+                )
+            missing_keys = {"weight", "reward"} - set(component_cfg.keys())
+            if missing_keys:
+                raise ValueError(
+                    f"CompositeRewardModel component '{name}' is missing required keys: {sorted(missing_keys)}"
+                )
+
+            weight = float(component_cfg["weight"])
+            reward_cfg = component_cfg["reward"]
+            reward_model = reward_cfg if isinstance(reward_cfg, BaseRewardModel) else lazy_instantiate(reward_cfg)
+            if not isinstance(reward_model, BaseRewardModel):
+                raise TypeError(
+                    f"CompositeRewardModel component '{name}' reward must instantiate to BaseRewardModel, "
+                    f"got {type(reward_model)}"
+                )
+
+            reward_models[str(name)] = reward_model
+            reward_weights[str(name)] = weight
+
+        self.reward_models = torch.nn.ModuleDict(reward_models)
+        self.reward_weights = reward_weights
+        self.record_component_metrics = bool(record_component_metrics)
+        self._last_component_rewards: Dict[str, torch.Tensor] = {}
+
+    def forward(self, inp: RewardInput) -> torch.Tensor:
+        total_reward: torch.Tensor | None = None
+        component_rewards: Dict[str, torch.Tensor] = {}
+
+        for name, reward_model in self.reward_models.items():
+            reward = reward_model(inp).to(dtype=torch.float32)  # tensor: [B]
+
+            if total_reward is None:
+                total_reward = torch.zeros_like(reward, dtype=torch.float32)
+            else:
+                reward = reward.to(device=total_reward.device, dtype=torch.float32)
+                if reward.shape != total_reward.shape:
+                    raise ValueError(
+                        f"CompositeRewardModel component '{name}' returned shape {tuple(reward.shape)}, "
+                        f"expected {tuple(total_reward.shape)}"
+                    )
+
+            total_reward = total_reward + self.reward_weights[name] * reward
+            if self.record_component_metrics:
+                component_rewards[name] = reward.detach()
+
+        assert total_reward is not None
+        self._last_component_rewards = component_rewards if self.record_component_metrics else {}  # 把各个 component 的 reward 值缓存起来，方便调出
+        return total_reward
+
+    def get_last_metrics(self) -> Dict[str, torch.Tensor]:
+        return dict(self._last_component_rewards)
+
+    def unload(self, clear_cuda_cache: bool = True) -> None:
+        for reward_model in self.reward_models.values():
+            if hasattr(reward_model, "unload"):
+                reward_model.unload(clear_cuda_cache=False)
+        self._last_component_rewards = {}
+        if clear_cuda_cache and torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 class SSIM_Reward(BaseRewardModel):

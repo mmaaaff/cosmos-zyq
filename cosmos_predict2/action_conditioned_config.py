@@ -63,7 +63,10 @@ class ActionConditionedInferenceArguments(CommonInferenceArguments):
     """Guidance value."""
     resolution: str = "none"
     """Resolution of the video (H,W). By default it will use model trained resolution. 9:16"""
-
+    # zyq ----------
+    num_steps: int = 35
+    """Number of denoising/sampling steps."""
+    # ---------------
     # Dataset-specific parameters
     camera_id: int = 0
     """Camera ID to use from the dataset."""

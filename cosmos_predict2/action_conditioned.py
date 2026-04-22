@@ -344,6 +344,7 @@ def inference(
                 resolution=inference_args.resolution,
                 seed=i,
                 negative_prompt=inference_args.negative_prompt,
+                num_steps=inference_args.num_steps,
             )
             # Extract next frame and video from result
             video_normalized = (video - (-1)) / (1 - (-1))

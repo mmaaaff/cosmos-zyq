@@ -15,6 +15,7 @@
   - **内容**：GRPO 的 SDE step（`grpo_sde_step`），支持基于 UniPC `sigmas` 计算 `next_latents` 与 step-level `log_prob`。
 - `cosmos_predict2/_src/predict2/action/models/action_conditioned_video2world_rectified_flow_grpo_model.py`
   - **内容**：GRPO 版模型（`ActionVideo2WorldModelRectifiedFlowGRPO` + Config），通过覆盖 `training_step` 实现：online rollout → reward → advantage → clipped loss（保持 `ImaginaireTrainer` 不变）。
+- `cosmos_predict2/_src/predict2/action/configs/action_conditioned/reward.py`，使用 hydra 注册了各类 reward
 
 ## 修改文件
 - `cosmos_predict2/_src/predict2/action/configs/action_conditioned/model.py`
@@ -22,4 +23,11 @@
 - `cosmos_predict2/experiments/base/action.py`
   - **改动**：新增 experiment `ac_reason_embeddings_rectified_flow_2b_256_320_grpo`，用于通过 `-- experiment=...` 启动 GRPO 配置（override 到 GRPO model group，并注入 `model.config.grpo/reward` 超参占位）。
 
+- `cosmos_predict2/_src/predict2/callbacks/wandb_log.py`，增加了对 grpo 参数记录的支持
 
+- 针对 action conditioned 示例推理代码无法调整 num_steps 问题：
+  - `cosmos_predict2/action_conditioned_config.py` L66 新增 num_steps 参数
+  - `cosmos_predict2/action_conditioned.py` L347 将 num_steps 参数传入
+  - `cosmos-zyq/assets/action_conditioned/basic/inference_params.json` 加入了 num_steps 参数的设置选项
+
+- `cosmos_predict2/_src/predict2/models/text2world_model_rectified_flow.py` L599。原版的实现有 bug，会导致 generate_samples_from_batch 无法正确对一批次样本进行去噪，而是输出几乎重复的批次内第一个样本的去噪结果。这会导致训练过程中记录的图片样例有问题（由 every_n_sample_reg 参数控制，具体逻辑在 cosmos_predict2/_src/predict2/callbacks/every_n_draw_sample.py 的 L307

@@ -414,8 +414,8 @@ class trainer_grpo(ImaginaireTrainer):
         optimizer, scheduler = model.init_optimizer_scheduler(self.config.optimizer, self.config.scheduler)
         grad_scaler = torch.amp.GradScaler("cuda", **self.config.trainer.grad_scaler_args)
         self.callbacks.on_optimizer_init_end()
-
-        iteration = self.checkpointer.load(model, optimizer, scheduler, grad_scaler)
+ 
+        iteration = self.checkpointer.load(model, optimizer=None, scheduler=None, grad_scaler=None)
         # ---------------------------------------------------------------------
         # Manual override for the starting iteration counter.
         resume_iteration = getattr(self.config.trainer, "resume_iteration", None)

@@ -7,15 +7,28 @@ Annotation:
 - Sigma/timestep scheduling is unified with UniPC's scheduler (`FlowUniPCMultistepScheduler.set_timesteps`) output.
 """
 
+# 说明（重要）：
+# - 本文件中的 GRPO rollout 只优化“单个模型原生时间窗口”的生成，不负责长视频的外层多 chunk 自回归 rollout（这是 inference 阶段会干的事情）。
+# - 对当前 action-conditioned 配置，这个原生窗口通常就是 12 个 action -> 13 帧视频。
+# - 这里看起来像“整段 action 一次性条件化并整段去噪”，是因为模型本来就是按一个 action chunk 对应一个
+#   video chunk 来设计的；这里的 rollout 轨迹主要是 diffusion 时间步上的 latent trajectory。
+# - 训练样本是否分 chunk，主要由上游 dataloader 决定：Dataset_3D 会先把长轨迹切成固定窗口，每个 sample
+#   只包含一个 sequence_length = 1 + num_action_per_chunk 的片段；因此这里并不是在对任意长整段视频直接生成。
+# - `examples/action_conditioned.py` 里的长视频推理会在模型外层再套一层 chunk loop，把多个 12-action 窗口串起来。
+#   当前文件没有显式建模那层长时闭环过程，所以它更适合优化单个 13-frame chunk 的质量，而不是直接优化长时 rollout。
+
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Callable, Dict, Optional, Tuple
 
 import attrs
 import torch
 import torch.distributed as dist
 
+from cosmos_predict2._src.imaginaire.lazy_config import LazyDict
+from cosmos_predict2._src.imaginaire.lazy_config import instantiate as lazy_instantiate
 from cosmos_predict2._src.imaginaire.utils import log
 from cosmos_predict2._src.imaginaire.utils.context_parallel import broadcast_split_tensor, cat_outputs_cp
 from cosmos_predict2._src.predict2.action.models.action_conditioned_video2world_rectified_flow_model import (
@@ -23,14 +36,7 @@ from cosmos_predict2._src.predict2.action.models.action_conditioned_video2world_
     Video2WorldModelRectifiedFlowConfig,
 )
 from cosmos_predict2._src.predict2.rl.grpo_sde_sampler import grpo_sde_step
-from cosmos_predict2._src.predict2.rl.reward import (
-    RewardInput,
-    CoTrackerCenteredVelocityReward,
-    DummyRewardModel,
-    SSIM_Reward,
-    VJEPA2Reward,
-    OpticalFlowReward,
-)
+from cosmos_predict2._src.predict2.rl.reward import RewardInput
 
 
 def _dist_is_initialized() -> bool:
@@ -119,41 +125,6 @@ class _GrpoHyperParams:
 
 
 @dataclass
-class _RewardParams:
-    # Placeholder reward type, e.g. "dummy"
-    type: str = "vjepa2"
-    # CoTracker centered velocity reward params
-    checkpoint_path: str = "checkpoints/cotracker/scaled_offline.pth"
-    input_resolution: tuple[int, int] | list[int] = (224, 224)
-    patch_size: int = 8
-    temporal_radius: int = 2
-    tau: float = 1.0
-    window_batch_size: int = 32
-    invisibility_penalty: float = 1.0
-    offline: bool = True
-    min_active_points: int = 16
-    # V-JEPA2 reward params
-    model_name: str = "facebook/vjepa2-vitg-fpc64-384"
-    num_frames: int = 64
-    image_size: int = 384
-    stride: int = 1
-    # Optical flow reward params
-    estimator: str = "farneback"
-    score_mode: str = "robust"
-    resize_hw: tuple[int, int] | list[int] | None = (128, 160)
-    frame_stride: int = 1
-    max_frames: int = 0
-    eps: float = 1e-3
-    pyr_scale: float = 0.5
-    levels: int = 3
-    winsize: int = 15
-    iterations: int = 3
-    poly_n: int = 5
-    poly_sigma: float = 1.2
-    flags: int = 0
-
-
-@dataclass
 class GrpoRolloutSamples:
     """
     Cached rollout samples for GRPO multi-update training.
@@ -170,6 +141,7 @@ class GrpoRolloutSamples:
     sigmas: torch.Tensor  # [S+1] float32
     init_noise: torch.Tensor  # [B, C, T, H, W] float32 (may be local under CP)
     rewards: torch.Tensor  # [B]
+    reward_metrics: Dict[str, torch.Tensor]
     advantages: torch.Tensor  # [B]
     velocity_fn: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]
     is_image_batch: bool
@@ -181,11 +153,12 @@ class ActionVideo2WorldModelRectifiedFlowGRPOConfig(Video2WorldModelRectifiedFlo
     Extends the base action-conditioned rectified-flow config with GRPO-specific knobs.
 
     Annotation:
-    - We keep `grpo` and `reward` as dictionaries for Hydra override friendliness.
+    - `grpo` stays as a plain dictionary for override friendliness.
+    - `reward` is a LazyDict so Hydra can select/instantiate reward implementations like other subcomponents.
     """
 
     grpo: Dict[str, Any] = attrs.field(factory=dict)
-    reward: Dict[str, Any] = attrs.field(factory=dict)
+    reward: LazyDict | None = None
 
 
 class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlow):
@@ -197,57 +170,12 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
 
     def __init__(self, config: ActionVideo2WorldModelRectifiedFlowGRPOConfig):
         super().__init__(config)
-        rp = self._get_reward_params()
-        # Reward model selection.
-        if rp.type == "dummy":
-            self._reward_model = DummyRewardModel()
-        elif rp.type == "ssim":
-            # Annotation:
-            # - SSIM expects pixel-space tensors; we will decode latents to pixels when computing reward.
-            # - Reference/GT video will be passed via RewardInput.metadata["gt_video"].
-            self._reward_model = SSIM_Reward()
-        elif rp.type == "vjepa2":
-            # Annotation:
-            # - Use the standard V-JEPA2 encoder only.
-            # - Reward is the mean sliding-window cosine similarity between pred/gt encoder embeddings.
-            self._reward_model = VJEPA2Reward(
-                model_name=str(rp.model_name),
-                num_frames=int(rp.num_frames),
-                image_size=int(rp.image_size),
-                stride=int(rp.stride),
+        if config.reward is None:
+            raise ValueError(
+                "GRPO reward config is required. Provide it via Hydra group override `/reward=...` "
+                "or by setting `model.config.reward`."
             )
-        elif rp.type == "cotracker_centered_velocity":
-            self._reward_model = CoTrackerCenteredVelocityReward(
-                checkpoint_path=str(rp.checkpoint_path),
-                input_resolution=rp.input_resolution,
-                patch_size=int(rp.patch_size),
-                temporal_radius=int(rp.temporal_radius),
-                tau=float(rp.tau),
-                window_batch_size=int(rp.window_batch_size),
-                score_mode=str(rp.score_mode),
-                eps=float(rp.eps),
-                min_active_points=int(rp.min_active_points),
-                invisibility_penalty=float(rp.invisibility_penalty),
-                offline=bool(rp.offline),
-            )
-        elif rp.type == "optical_flow":
-            self._reward_model = OpticalFlowReward(
-                estimator=str(rp.estimator),
-                score_mode=str(rp.score_mode),
-                resize_hw=rp.resize_hw,
-                frame_stride=int(rp.frame_stride),
-                max_frames=int(rp.max_frames),
-                eps=float(rp.eps),
-                pyr_scale=float(rp.pyr_scale),
-                levels=int(rp.levels),
-                winsize=int(rp.winsize),
-                iterations=int(rp.iterations),
-                poly_n=int(rp.poly_n),
-                poly_sigma=float(rp.poly_sigma),
-                flags=int(rp.flags),
-            )
-        else:
-            raise ValueError(f"Unknown reward type: {rp.type}")
+        self._reward_model = lazy_instantiate(config.reward)
 
     # ----------------------------- utilities -----------------------------
     def _get_grpo_params(self) -> _GrpoHyperParams:
@@ -269,17 +197,42 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         hp.timestep_fraction = min(max(hp.timestep_fraction, 0.0), 1.0)
         return hp
 
-    def _get_reward_params(self) -> _RewardParams:
-        d = dict(self.config.reward or {})
-        rp = _RewardParams()
-        for k, v in d.items():
-            if hasattr(rp, k):
-                setattr(rp, k, v)
-        return rp
-
     def unload_reward_model(self) -> None:
         if hasattr(self._reward_model, "unload"):
             self._reward_model.unload(clear_cuda_cache=True)
+
+    def _extract_reward_metrics(self, batch_size: int) -> Dict[str, torch.Tensor]:
+        if not hasattr(self._reward_model, "get_last_metrics"):
+            return {}
+
+        raw_metrics = self._reward_model.get_last_metrics()
+        metrics: Dict[str, torch.Tensor] = {}
+        for name, value in raw_metrics.items():
+            if not torch.is_tensor(value):
+                log.warning(f"Skipping reward metric '{name}' because it is not a tensor: {type(value)}")
+                continue
+
+            value = value.detach().to(device=self.tensor_kwargs["device"], dtype=torch.float32)
+            if value.ndim != 1:
+                log.warning(
+                    f"Skipping reward metric '{name}' because it must have shape [B], got {tuple(value.shape)}"
+                )
+                continue
+            if value.shape[0] != batch_size:
+                log.warning(
+                    f"Skipping reward metric '{name}' because batch size {value.shape[0]} != expected {batch_size}"
+                )
+                continue
+
+            metrics[name] = value
+        return metrics
+
+    @staticmethod
+    def _reward_metric_log_key(name: str, stat: str) -> str:
+        safe_name = re.sub(r"[^0-9a-zA-Z_]+", "_", name).strip("_")
+        if not safe_name:
+            safe_name = "unnamed"
+        return f"reward_component_{safe_name}_{stat}"
 
     def _maybe_repeat_batch_for_group(self, data_batch: Dict[str, torch.Tensor], num_generations: int) -> Dict[str, torch.Tensor]:
         """
@@ -388,8 +341,6 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         """
 
         hp = self._get_grpo_params()
-        rp = self._get_reward_params()
-
         self._normalize_video_databatch_inplace(data_batch)
         self._augment_image_dim_inplace(data_batch)
 
@@ -542,6 +493,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
                 },
             )
         ).to(device=self.tensor_kwargs["device"], dtype=torch.float32)
+        reward_metrics = self._extract_reward_metrics(batch_size=int(rewards.shape[0]))
 
         advantages = self._compute_advantage(rewards, hp).to(device=self.tensor_kwargs["device"], dtype=torch.float32)
 
@@ -554,6 +506,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             # IMPORTANT: store the local (possibly context-parallel split) noise for later updates.
             init_noise=init_noise_local.detach(),
             rewards=rewards.detach(),
+            reward_metrics={k: v.detach() for k, v in reward_metrics.items()},
             advantages=advantages.detach(),
             velocity_fn=velocity_fn,
             is_image_batch=is_image_batch,
@@ -644,6 +597,9 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             "approx_kl": approx_kl,
             "clip_frac": clip_frac,
         }
+        for name, metric in samples.reward_metrics.items():
+            output_batch[self._reward_metric_log_key(name, "mean")] = metric.mean().detach()
+            output_batch[self._reward_metric_log_key(name, "std")] = metric.std().detach()
         # 为了保证使用原本 WandbCallback 不出错，需要加一个 edm_loss 字段，这里直接把 grpo_loss 的值赋给它
         output_batch["edm_loss"] = output_batch["grpo_loss"]
         return output_batch, loss
@@ -661,4 +617,3 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         )
         samples = self.collect_rollout_and_rewards(data_batch)
         return self.compute_grpo_loss(samples, update_seed=int(iteration))
-

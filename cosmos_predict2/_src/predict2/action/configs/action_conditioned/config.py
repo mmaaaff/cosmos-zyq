@@ -24,6 +24,7 @@ from cosmos_predict2._src.predict2.action.configs.action_conditioned.conditioner
 from cosmos_predict2._src.predict2.action.configs.action_conditioned.data import register_training_and_val_data
 from cosmos_predict2._src.predict2.action.configs.action_conditioned.model import register_model
 from cosmos_predict2._src.predict2.action.configs.action_conditioned.net import register_net
+from cosmos_predict2._src.predict2.action.configs.action_conditioned.reward import register_reward
 from cosmos_predict2._src.predict2.configs.common.defaults.checkpoint import register_checkpoint
 from cosmos_predict2._src.predict2.configs.common.defaults.ckpt_type import register_ckpt_type
 from cosmos_predict2._src.predict2.configs.common.defaults.ema import register_ema
@@ -94,6 +95,7 @@ def make_config() -> Config:
 
     register_net()
     register_conditioner()
+    register_reward()
 
     # 下面这几行把所有 experiment 配置可能所在的位置全部 import 进来，也
     import_all_modules_from_package("cosmos_predict2.experiments", reload=True)

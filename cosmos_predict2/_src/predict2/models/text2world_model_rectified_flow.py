@@ -557,13 +557,13 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
                 self.tokenizer.get_latent_num_frames(_T),
                 _H // self.tokenizer.spatial_compression_factor,
                 _W // self.tokenizer.spatial_compression_factor,
-            ]
+            ]  # [C, T_latent, H_latent, W_latent]
 
         noise = misc.arch_invariant_rand(
             (n_sample,) + tuple(state_shape),
             torch.float32,
             self.tensor_kwargs["device"],
-            seed,
+            seed,  # [b, C, T_latent, H_latent, W_latent]
         )
 
         seed_g = torch.Generator(device=self.tensor_kwargs["device"])
@@ -581,7 +581,7 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
         velocity_fn = self.get_velocity_fn_from_batch(data_batch, guidance, is_negative_prompt=is_negative_prompt)
         if self.net.is_context_parallel_enabled:
             noise = broadcast_split_tensor(tensor=noise, seq_dim=2, process_group=self.get_context_parallel_group())
-        latents = noise
+        latents = noise  # [b, C, T_latent, H_latent, W_latent]
 
         if INTERNAL:
             timesteps_iter = timesteps
@@ -593,9 +593,10 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
 
             timestep = torch.stack(timestep)
 
-            velocity_pred = velocity_fn(noise, latent_model_input, timestep.unsqueeze(0))
+            velocity_pred = velocity_fn(noise, latent_model_input, timestep.unsqueeze(0))  # [b, C, T_latent, H_latent, W_latent]
             temp_x0 = self.sample_scheduler.step(
-                velocity_pred.unsqueeze(0), t, latents[0].unsqueeze(0), return_dict=False, generator=seed_g
+                # velocity_pred.unsqueeze(0), t, latents[0].unsqueeze(0), return_dict=False, generator=seed_g  # velocity_pred.unsqueeze(0): [1, b, C, T, H, W];  latents[0].unsqueeze(0): [1, C, T, H, W]
+                velocity_pred.unsqueeze(0), t, latents.unsqueeze(0), return_dict=False, generator=seed_g  # zyq: 上面那个原版感觉有 bug
             )[0]
             latents = temp_x0.squeeze(0)
 
