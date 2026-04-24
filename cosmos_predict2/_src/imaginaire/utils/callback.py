@@ -73,6 +73,8 @@ class CallBackGroup:
                 )
                 callback_configs = {f"callback_{i}": v for i, v in enumerate(callback_configs)}
             for callback_name, current_callback_cfg in callback_configs.items():
+                if current_callback_cfg is None:  # zyq
+                    continue
                 if "_target_" not in current_callback_cfg:
                     log.critical(
                         f"Callback {callback_name} is missing the '_target_' field. \n SKip {current_callback_cfg}"

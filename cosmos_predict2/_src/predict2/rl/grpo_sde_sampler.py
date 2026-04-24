@@ -5,11 +5,12 @@ Why this exists:
 - COSMOS inference sampling uses UniPC (deterministic multi-step solver) and therefore does not provide log-probabilities.
 - GRPO/PPO-style objectives require log_prob under the policy for state transitions.
 
-Design choice (critical):
+Design choices (critical):
 - We reuse UniPC's `sigmas` schedule as the single source of truth for sigma/timestep scheduling.
 - The stochasticity is injected via an explicit Gaussian transition:
     x_{i+1} ~ Normal(mean_i, std_i)
   and we compute log_prob(x_{i+1} | x_i).
+- The transition mean uses the DanceGRPO/Flux SDE correction term rather than a plain Euler ODE mean.
 """
 
 from __future__ import annotations
@@ -71,9 +72,11 @@ def grpo_sde_step(
         GrpoStepOutput with `next_latents`, `pred_x0`, `log_prob` (shape [B]).
 
     Notes:
-    - This follows `train_grpo_flux.py` in DanceGRPO codebase:
+    - This follows the `sde_solver=True` path in DanceGRPO's `train_grpo_flux.py`:
         pred_x0 = x - sigma * v
         mean   = x + (sigma_next - sigma) * v
+        score  = -(x - (1 - sigma) * pred_x0) / sigma**2
+        mean   = mean + (-0.5 * eta**2 * score) * (sigma_next - sigma)
         std    = eta * sqrt(sigma - sigma_next)
     """
 
@@ -96,6 +99,10 @@ def grpo_sde_step(
 
     pred_x0 = latents_f - sigma * velocity_f
 
+    sigma_safe = sigma.clamp_min(1e-6)
+    score_estimate = -(latents_f - pred_x0 * (1.0 - sigma)) / (sigma_safe * sigma_safe)
+    mean = mean + (-0.5 * eta * eta * score_estimate) * dsigma
+
     if fixed_next_latents is None:
         next_latents = mean + std * noise.to(torch.float32)
     else:
@@ -106,5 +113,3 @@ def grpo_sde_step(
     # print(f"std: {std}")
     # print(f"log_probs: {log_prob}")
     return GrpoStepOutput(next_latents=next_latents.to(latents.dtype), pred_x0=pred_x0.to(latents.dtype), log_prob=log_prob)
-
-

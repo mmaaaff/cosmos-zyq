@@ -47,7 +47,7 @@ OpticalFlowRewardConfig: LazyDict = L(OpticalFlowReward)(
 )
 
 CoTrackerCenteredVelocityRewardConfig: LazyDict = L(CoTrackerCenteredVelocityReward)(
-    checkpoint_path="checkpoints/cotracker/scaled_offline.pth",
+    checkpoint_path="ckpt/cotracker/scaled_offline.pth",
     input_resolution=[224, 224],
     patch_size=8,
     temporal_radius=2,

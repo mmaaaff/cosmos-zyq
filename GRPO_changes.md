@@ -30,4 +30,10 @@
   - `cosmos_predict2/action_conditioned.py` L347 将 num_steps 参数传入
   - `cosmos-zyq/assets/action_conditioned/basic/inference_params.json` 加入了 num_steps 参数的设置选项
 
-- `cosmos_predict2/_src/predict2/models/text2world_model_rectified_flow.py` L599。原版的实现有 bug，会导致 generate_samples_from_batch 无法正确对一批次样本进行去噪，而是输出几乎重复的批次内第一个样本的去噪结果。这会导致训练过程中记录的图片样例有问题（由 every_n_sample_reg 参数控制，具体逻辑在 cosmos_predict2/_src/predict2/callbacks/every_n_draw_sample.py 的 L307
+- 原代码 bug
+  - `cosmos_predict2/_src/predict2/models/text2world_model_rectified_flow.py` L599。原版的实现有 bug，会导致 generate_samples_from_batch 无法正确对一批次样本进行去噪，而是输出几乎重复的批次内第一个样本的去噪结果。这会导致训练过程中记录的图片样例有问题（由 every_n_sample_reg 参数控制，具体逻辑在 cosmos_predict2/_src/predict2/callbacks/every_n_draw_sample.py 的 L307
+  - `cosmos_predict2/_src/imaginaire/utils/wandb_util.py` L43，加入判断逻辑避免 wandb 重复初始化（默认每个实验会起一个 wandb 和一个 wandb_10x）
+  - `cosmos_predict2/_src/imaginaire/utils/callback.py` L76, 添加对于 None 的 callback 的跳过逻辑
+
+- 其他
+  - `co-tracker/cotracker/models/core/cotracker/cotracker3_offline.py`, L141 .view() -> .reshape()

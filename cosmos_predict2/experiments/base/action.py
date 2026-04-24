@@ -49,8 +49,8 @@ ac_reason_embeddings_rectified_flow_2b_256_320 = LazyDict(
             group="cosmos_predict_v2p5",
             name="2b_bridge_action_conditioned",
             # zyq
-            # wandb_reuse_id=False,
-            # wandb_resume="never",
+            wandb_reuse_id=False,
+            wandb_resume="never",
         ),
         optimizer=dict(
             lr=2 ** (-14.5),  # 2**(-14.5) = 3.0517578125e-05
@@ -70,6 +70,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320 = LazyDict(
             ),
         ),
         trainer=dict(
+            max_iter=1_000_000,
             straggler_detection=dict(enabled=False),
             callbacks=dict(
                 every_n_sample_reg=dict(
@@ -151,19 +152,20 @@ CHECKPOINT_DIR=$CHECKPOINTS_DIR/$CHECKPOINT_ITER
 
 python ./scripts/convert_distcp_to_pt.py $CHECKPOINT_DIR/model $CHECKPOINT_DIR
 
+SAVE_ROOT=outputs/action_conditioned/basic/CT/iter_000001700_model.pt/20steps
 python examples/action_conditioned.py \
--i assets/action_conditioned/basic/inference_params.json -o outputs/action_conditioned/basic \
---config-file cosmos_predict2/_src/predict2/action/configs/action_conditioned/config.py \
---checkpoint-path $CHECKPOINT_DIR/model_ema_bf16.pt \
---experiment ac_reason_embeddings_rectified_flow_2b_256_320_grpo
+-i assets/action_conditioned/basic/inference_params.json -o $SAVE_ROOT \
+--save-root $SAVE_ROOT \
+--config-file cosmos_predict2/_src/predict2/action/configs/action_conditioned/config_grpo.py \
+--checkpoint-path $CHECKPOINT_DIR/model.pt \
+--experiment ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker
 """
-ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
+ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base = LazyDict(
     dict(
         defaults=[
-            DEFAULT_CHECKPOINT.experiment,
+            f"/experiment/{DEFAULT_CHECKPOINT.experiment}",
             # NOTE: GRPO 版本的模型配置组（由 action_conditioned/configs/action_conditioned/model.py 注册）
             {"override /model": "action_conditioned_video2world_fsdp_rectified_flow_grpo"},
-            {"override /reward": "cotracker_centered_velocity"},
             {"override /net": "cosmos_v1_2B_action_conditioned"},
             {"override /conditioner": "action_conditioned_video_conditioner"},
             {"override /data_train": "bridge_13frame_480_640_train"},
@@ -173,9 +175,8 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
         job=dict(
             project="cosmos_predict2_action_conditioned_grpo",
             group="cosmos_predict_v2p5",
-            name="2b_bridge_action_conditioned_grpo_vjepa_1",
-            wandb_reuse_id=False,
-            wandb_resume="never",
+            wandb_reuse_id=False,  # True / False
+            wandb_resume="never",  # "allow" / "must" / "never"
         ),
         optimizer=dict(
             lr=1e-5,
@@ -184,7 +185,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
         checkpoint=dict(
             save_iter=50,
             # pyrefly: ignore  # missing-attribute
-            load_path="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned/cosmos_predict_v2p5/2b_bridge_action_conditioned/checkpoints/iter_000136000/model_ema_fp32.pt",  # 直接使用 post-train 过的模型
+            load_path="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned/cosmos_predict_v2p5/2b_bridge_action_conditioned/checkpoints/iter_000150000/model_ema_fp32.pt",  # 直接使用 post-train 过的模型
             #load_path=get_checkpoint_path("s3://bucket/cosmos_predict2_action_conditioned/action_conditional/cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320/checkpoints/iter_000016000/model"),
             load_training_state=False,
             strict_resume=False,
@@ -198,7 +199,8 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
         trainer=dict(
             straggler_detection=dict(enabled=False),
             logging_iter=2,
-            resume_iteration=0,  # 强制 trainer_grpo 的 iteration 起点
+            grad_accum_iter=4,  # note: 与 rollout_num_batches 一致
+            # resume_iteration=0,  # 强制 trainer_grpo 的 iteration 起点。设置为非 None 值则禁止加载 optimizer, scheduler, grad_scaler 状态，设为 None 则视作继续训练，加载这些状态
             # NOTE: GRPO 训练通常更慢；可以视情况把采样 callback 频率调低
             callbacks=dict(
                 grad_clip=dict(
@@ -231,9 +233,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                 wandb=dict(
                     save_s3=False,
                 ),
-                wandb_10x=dict(
-                    save_s3=False,
-                ),
+                wandb_10x=None,
                 dataloader_speed=dict(
                     save_s3=False,
                 ),
@@ -259,8 +259,8 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                 grpo=dict(
                     num_steps=20,
                     shift=5.0,  # Cosmos 原始代码 5.0，但感觉应该没用？因为似乎 use_kerras_sigma_at_inference 是 True（不过 grpo 这里我已经改成 flase）
-                    eta=0.3,  # follows GRPO
-                    guidance=7.0,
+                    eta=0.2,  # GRPO: 0.3
+                    guidance=0.0,  # 若 guidance > 0, 则 num_updates 应该要降低
                     seed=1,
                     use_group_adv=True,
                     num_generations=12,  # 一个 prompt 生成多少个样本，即 group size
@@ -269,20 +269,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
                     rollout_num_batches=4,  # 一次 rollout 多少个 batch，注意这里实际值要乘以 GPU 数量再乘以 batch_size 才得到 prompts per iter
                     num_updates=4,  # 用一组 rollout 训练多少轮
                     clip_range=1e-4,
-                    adv_clip_max=100.0,
-                ),
-                reward=dict(
-                    checkpoint_path="checkpoints/cotracker/scaled_offline.pth",
-                    input_resolution=[224, 224],
-                    patch_size=8,
-                    temporal_radius=2,
-                    tau=1.0,
-                    window_batch_size=32,
-                    score_mode="charbonnier",
-                    eps=1e-3,
-                    min_active_points=16,
-                    invisibility_penalty=1.0,
-                    offline=True,
+                    adv_clip_max=5.0,
                 ),
             ),
         ),
@@ -298,6 +285,93 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo = LazyDict(
     flags={"allow_objects": True},
 )
 
+
+"""
+torchrun --nproc_per_node=4 --master_port=12341 -m scripts.train \
+    --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config_grpo.py  \
+    -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320_grpo_ssim ~dataloader_train.dataloaders \
+    job.wandb_mode=offline \
+    2>&1 | tee /inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/train.log
+"""
+ac_reason_embeddings_rectified_flow_2b_256_320_grpo_ssim = LazyDict(
+    dict(
+        defaults=[
+            # 到 /experiment/grpo_base 去找 grpo_base 这个 experiment, 因为它在 cs.store 时是注册在这个 group 里的。
+            # 要用绝对路径 /experiment/grpo_base 是因为目前本来就已经在 experiment group 里，不用绝对路径会变成 /experiment/experiment/...
+            {"/experiment/grpo_base": "ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base"},
+            {"override /reward": "ssim"},
+            "_self_",
+        ],
+        job=dict(
+            name="2b_bridge_action_conditioned_grpo_ssim",
+        ),
+    ),
+    flags={"allow_objects": True},
+)
+
+ac_reason_embeddings_rectified_flow_2b_256_320_grpo_vjepa = LazyDict(
+    dict(
+        defaults=[
+            {"/experiment/grpo_base": "ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base"},
+            {"override /reward": "vjepa2"},
+            "_self_",
+        ],
+        job=dict(
+            name="2b_bridge_action_conditioned_grpo_vjepa",
+        ),
+    ),
+    flags={"allow_objects": True},
+)
+
+"""
+torchrun --nproc_per_node=4 --master_port=12341 -m scripts.train \
+    --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config_grpo.py  \
+    -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320_grpo_optical_flow ~dataloader_train.dataloaders \
+    job.wandb_mode=offline \
+    2>&1 | tee /inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/train_OF.log 
+"""
+ac_reason_embeddings_rectified_flow_2b_256_320_grpo_optical_flow = LazyDict(
+    dict(
+        defaults=[
+            {"/experiment/grpo_base": "ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base"},
+            {"override /reward": "optical_flow"},
+            "_self_",
+        ],
+        job=dict(
+            name="2b_bridge_action_conditioned_grpo_optical_flow",
+            wandb_reuse_id=True,
+            wandb_resume="must",
+        ),
+        checkpoint=dict(
+            # load_path="",
+            load_training_state=True,
+            strict_resume=True,
+            ),
+    ),
+    flags={"allow_objects": True},
+)
+
+"""
+torchrun --nproc_per_node=4 --master_port=12341 -m scripts.train \
+    --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config_grpo.py  \
+    -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker ~dataloader_train.dataloaders \
+    job.wandb_mode=offline \
+    2>&1 | tee /inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/train_cotracker.log 
+"""
+ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker = LazyDict(
+    dict(
+        defaults=[
+            {"/experiment/grpo_base": "ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base"},
+            {"override /reward": "cotracker_centered_velocity"},
+            "_self_",
+        ],
+        job=dict(
+            name="2b_bridge_action_conditioned_grpo_cotracker",
+        ),
+    ),
+    flags={"allow_objects": True},
+)
+
 """
 torchrun --nproc_per_node=4 --master_port=12341 -m scripts.train \
     --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config_grpo.py  \
@@ -307,110 +381,15 @@ torchrun --nproc_per_node=4 --master_port=12341 -m scripts.train \
 ac_reason_embeddings_rectified_flow_2b_256_320_grpo_mixed_reward = LazyDict(
     dict(
         defaults=[
-            DEFAULT_CHECKPOINT.experiment,
-            {"override /model": "action_conditioned_video2world_fsdp_rectified_flow_grpo"},
+            {"/experiment/grpo_base": "ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base"},
             {"override /reward": "mixed"},
-            {"override /net": "cosmos_v1_2B_action_conditioned"},
-            {"override /conditioner": "action_conditioned_video_conditioner"},
-            {"override /data_train": "bridge_13frame_480_640_train"},
-            {"override /data_val": "bridge_13frame_480_640_val"},
             "_self_",
         ],
         job=dict(
-            project="cosmos_predict2_action_conditioned_grpo",
-            group="cosmos_predict_v2p5",
             name="2b_bridge_action_conditioned_grpo_mixed_reward",
-            wandb_reuse_id=False,
-            wandb_resume="never",
-        ),
-        optimizer=dict(
-            lr=1e-5,
-            weight_decay=0.1,
-        ),
-        checkpoint=dict(
-            save_iter=50,
-            # pyrefly: ignore  # missing-attribute
-            load_path="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned/cosmos_predict_v2p5/2b_bridge_action_conditioned/checkpoints/iter_000136000/model_ema_fp32.pt",
-            load_training_state=False,
-            strict_resume=False,
-            load_from_object_store=dict(
-                enabled=False,
-            ),
-            save_to_object_store=dict(
-                enabled=False,
-            ),
-        ),
-        trainer=dict(
-            straggler_detection=dict(enabled=False),
-            logging_iter=2,
-            resume_iteration=0,
-            callbacks=dict(
-                grad_clip=dict(
-                    clip_norm=1,
-                ),
-                every_n_sample_reg=dict(
-                    every_n=100,
-                    do_x0_prediction=False,
-                    guidance=[0, 3, 7],
-                    fps=16,
-                    save_s3=False,
-                ),
-                every_n_sample_ema=dict(
-                    every_n=100,
-                    do_x0_prediction=False,
-                    guidance=[0, 3, 7],
-                    fps=16,
-                    save_s3=False,
-                ),
-                heart_beat=dict(
-                    save_s3=False,
-                ),
-                iter_speed=dict(
-                    hit_thres=100,
-                    save_s3=False,
-                ),
-                device_monitor=dict(
-                    save_s3=False,
-                ),
-                wandb=dict(
-                    save_s3=False,
-                ),
-                wandb_10x=dict(
-                    save_s3=False,
-                ),
-                dataloader_speed=dict(
-                    save_s3=False,
-                ),
-            ),
-        ),
-        model_parallel=dict(
-            context_parallel_size=1,
         ),
         model=dict(
             config=dict(
-                min_num_conditional_frames=1,
-                max_num_conditional_frames=1,
-                conditional_frames_probs=None,
-                state_t=1 + 12 // 4,
-                net=dict(
-                    action_dim=7,
-                    num_action_per_chunk=12,
-                ),
-                grpo=dict(
-                    num_steps=20,
-                    shift=5.0,
-                    eta=0.3,
-                    guidance=7.0,
-                    seed=1,
-                    use_group_adv=True,
-                    num_generations=12,
-                    init_same_noise=True,
-                    timestep_fraction=0.6,
-                    rollout_num_batches=4,
-                    num_updates=4,
-                    clip_range=1e-4,
-                    adv_clip_max=100.0,
-                ),
                 reward=dict(
                     components=dict(
                         cotracker=dict(
@@ -425,22 +404,25 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_mixed_reward = LazyDict(
                 ),
             ),
         ),
-        dataloader_train=dict(
-            batch_size=1,
-            sampler=dict(
-                dataset=dict(fps_downsample_ratio=1, video_size=[256, 320]),
-            ),
-            dataset=dict(fps_downsample_ratio=1, video_size=[256, 320]),
-        ),
     ),
     flags={"allow_objects": True},
 )
 
 cs = ConfigStore.instance()
 
+cs.store(
+    group="experiment/grpo_base",
+    package="_global_",
+    name="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base",
+    node=ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base,
+)
+
 for _item in [
     ac_reason_embeddings_rectified_flow_2b_256_320,
-    ac_reason_embeddings_rectified_flow_2b_256_320_grpo,
+    ac_reason_embeddings_rectified_flow_2b_256_320_grpo_ssim,
+    ac_reason_embeddings_rectified_flow_2b_256_320_grpo_vjepa,
+    ac_reason_embeddings_rectified_flow_2b_256_320_grpo_optical_flow,
+    ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker,
     ac_reason_embeddings_rectified_flow_2b_256_320_grpo_mixed_reward,
 ]:
     # Get the experiment name from the global variable

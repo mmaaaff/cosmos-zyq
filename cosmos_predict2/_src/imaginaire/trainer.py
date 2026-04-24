@@ -415,17 +415,8 @@ class trainer_grpo(ImaginaireTrainer):
         grad_scaler = torch.amp.GradScaler("cuda", **self.config.trainer.grad_scaler_args)
         self.callbacks.on_optimizer_init_end()
  
-        iteration = self.checkpointer.load(model, optimizer=None, scheduler=None, grad_scaler=None)
-        # ---------------------------------------------------------------------
-        # Manual override for the starting iteration counter.
-        resume_iteration = getattr(self.config.trainer, "resume_iteration", None)
-        if resume_iteration is not None:
-            log.warning(
-                f"[GRPO] Overriding starting iteration from checkpointer ({iteration}) to trainer.resume_iteration={resume_iteration}. "
-                "This only changes the trainer loop counter; it does NOT reload optimizer/scheduler states."
-            )
-            iteration = resume_iteration
-        # ---------------------------------------------------------------------
+        iteration = self.checkpointer.load(model, optimizer, scheduler, grad_scaler)
+        
         grad_accum_iter = 0
         log.critical(f"Distributed parallelism mode: {self.config.trainer.distributed_parallelism}")
 

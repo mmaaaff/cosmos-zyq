@@ -211,3 +211,4 @@ cython_debug/
 .sii
 vjepa2/
 CLAUDE.md
+.vscode/

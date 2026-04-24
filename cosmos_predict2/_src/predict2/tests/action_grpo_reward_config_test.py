@@ -19,6 +19,7 @@ from cosmos_predict2._src.predict2.action.models import action_conditioned_video
 from cosmos_predict2._src.predict2.action.models.action_conditioned_video2world_rectified_flow_model import (
     ActionVideo2WorldModelRectifiedFlow,
 )
+from cosmos_predict2._src.predict2.rl.grpo_sde_sampler import grpo_sde_step
 from cosmos_predict2._src.predict2.rl.reward import (
     CompositeRewardModel,
     CoTrackerCenteredVelocityReward,
@@ -112,8 +113,8 @@ class _MockScheduler:
 
     def set_timesteps(self, num_steps, device, shift, use_kerras_sigma):
         del num_steps, shift, use_kerras_sigma
-        self.timesteps = torch.tensor([1], dtype=torch.int64, device=device)
-        self.sigmas = torch.tensor([1.0, 0.0], dtype=torch.float32, device=device)
+        self.timesteps = torch.tensor([2, 1], dtype=torch.int64, device=device)
+        self.sigmas = torch.tensor([1.0, 0.5, 0.0], dtype=torch.float32, device=device)
 
 
 def test_collect_rollout_and_rewards_caches_reward_metrics(monkeypatch):
@@ -143,7 +144,7 @@ def test_collect_rollout_and_rewards_caches_reward_metrics(monkeypatch):
         model,
         "_get_grpo_params",
         lambda: SimpleNamespace(
-            num_steps=1,
+            num_steps=2,
             guidance=1.0,
             shift=1.0,
             eta=0.0,
@@ -166,6 +167,10 @@ def test_collect_rollout_and_rewards_caches_reward_metrics(monkeypatch):
 
     assert set(samples.reward_metrics.keys()) == {"ssim"}
     assert torch.allclose(samples.reward_metrics["ssim"], torch.tensor([0.25], dtype=torch.float32))
+    assert samples.timestep_tokens.tolist() == [2]
+    assert samples.latents.shape[1] == 1
+    assert samples.next_latents.shape[1] == 1
+    assert samples.old_log_probs.shape[1] == 1
 
 
 def test_compute_grpo_loss_logs_reward_component_metrics(monkeypatch):
@@ -213,3 +218,28 @@ def test_compute_grpo_loss_logs_reward_component_metrics(monkeypatch):
     assert "reward_component_ssim_std" in output_batch
     assert "reward_component_vjepa2_mean" in output_batch
     assert "reward_component_vjepa2_std" in output_batch
+
+
+def test_grpo_sde_step_uses_dancegrpo_score_correction():
+    latents = torch.tensor([[1.2]], dtype=torch.float32)
+    velocity = torch.tensor([[0.5]], dtype=torch.float32)
+    sigma = torch.tensor(0.8, dtype=torch.float32)
+    sigma_next = torch.tensor(0.6, dtype=torch.float32)
+    eta = 0.3
+
+    out = grpo_sde_step(
+        latents=latents,
+        velocity=velocity,
+        sigma=sigma,
+        sigma_next=sigma_next,
+        eta=eta,
+        noise=torch.zeros_like(latents),
+    )
+
+    dsigma = sigma_next - sigma
+    pred_x0 = latents - sigma * velocity
+    score = -(latents - pred_x0 * (1.0 - sigma)) / (sigma * sigma)
+    expected_mean = latents + dsigma * velocity + (-0.5 * eta * eta * score) * dsigma
+
+    assert torch.allclose(out.pred_x0, pred_x0)
+    assert torch.allclose(out.next_latents, expected_mean)

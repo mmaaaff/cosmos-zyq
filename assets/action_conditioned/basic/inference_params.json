@@ -5,7 +5,7 @@
   "save_root": "outputs/action_conditioned/basic",
   "guidance": 7,
   "resolution": "256,320",
-  "num_steps": 35,
+  "num_steps": 20,
   "camera_id": 0,
   "start": 0,
   "end": 100,

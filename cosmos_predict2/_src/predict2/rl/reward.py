@@ -589,7 +589,7 @@ class CoTrackerCenteredVelocityReward(BaseRewardModel):
         model = CoTrackerPredictor(
             checkpoint=self.checkpoint_path,
             offline=self.offline,
-            window_len=(2 * self.temporal_radius + 1),
+            # window_len=(2 * self.temporal_radius + 1),  # seems not to work
         )
         model.eval()
         for p in model.parameters():

@@ -40,6 +40,9 @@ def init_wandb(config: Config, model: ImaginaireModel) -> None:
         config (Config): The config object for the Imaginaire codebase.
         model (ImaginaireModel): The PyTorch model.
     """
+    if wandb.run is not None:  # zyq
+        return
+
     if isinstance(config.job, DictConfig):
         from cosmos_predict2._src.imaginaire.config import JobConfig
 

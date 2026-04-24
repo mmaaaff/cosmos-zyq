@@ -186,7 +186,9 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
                 setattr(hp, k, v)
         # Defensive clamps
         hp.num_steps = int(hp.num_steps)
-        hp.num_steps = max(hp.num_steps, 1)
+        # We drop the final denoising transition from the GRPO loss to match DanceGRPO,
+        # so at least two rollout steps are needed to leave one trainable transition.
+        hp.num_steps = max(hp.num_steps, 2)
         hp.rollout_num_batches = int(hp.rollout_num_batches)
         hp.rollout_num_batches = max(hp.rollout_num_batches, 1)
         hp.num_updates = int(hp.num_updates)
@@ -497,11 +499,19 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
 
         advantages = self._compute_advantage(rewards, hp).to(device=self.tensor_kwargs["device"], dtype=torch.float32)
 
+        # Match DanceGRPO's training sample construction: rollout still runs all S transitions
+        # to produce the final sample/reward, but the last transition sigma[S-1] -> sigma[S]
+        # is excluded from the policy loss.
+        train_latents_s = latents_s[:, :-1]
+        train_next_latents_s = next_latents_s[:, :-1]
+        train_old_log_probs_s = old_log_probs_s[:, :-1]
+        train_timesteps = timesteps[:-1]
+
         return GrpoRolloutSamples(
-            latents=latents_s,
-            next_latents=next_latents_s,
-            old_log_probs=old_log_probs_s,
-            timestep_tokens=timesteps.detach(),
+            latents=train_latents_s.detach(),
+            next_latents=train_next_latents_s.detach(),
+            old_log_probs=train_old_log_probs_s.detach(),
+            timestep_tokens=train_timesteps.detach(),
             sigmas=sigmas.detach(),
             # IMPORTANT: store the local (possibly context-parallel split) noise for later updates.
             init_noise=init_noise_local.detach(),
