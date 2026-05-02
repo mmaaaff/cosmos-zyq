@@ -91,24 +91,23 @@ def grpo_sde_step(
         sigma_next = sigma_next.unsqueeze(-1)
 
     dsigma = sigma_next - sigma  # negative when sigma decreases
-    mean = latents_f + dsigma * velocity_f
+    prev_sample_mean = latents_f + dsigma * velocity_f
+    pred_x0 = latents_f - sigma * velocity_f
 
     # delta > 0 when sigma decreases
     delta = (sigma - sigma_next)
     std = (eta * torch.sqrt(delta))
 
-    pred_x0 = latents_f - sigma * velocity_f
-
-    sigma_safe = sigma.clamp_min(1e-6)
-    score_estimate = -(latents_f - pred_x0 * (1.0 - sigma)) / (sigma_safe * sigma_safe)
-    mean = mean + (-0.5 * eta * eta * score_estimate) * dsigma
+    score_estimate = -(latents_f - pred_x0 * (1.0 - sigma)) / sigma**2
+    log_term = (-0.5 * eta**2 * score_estimate)
+    prev_sample_mean = prev_sample_mean + log_term * dsigma
 
     if fixed_next_latents is None:
-        next_latents = mean + std * noise.to(torch.float32)
+        next_latents = prev_sample_mean + std * noise.to(torch.float32)
     else:
         next_latents = fixed_next_latents.to(torch.float32)
 
-    log_prob = _normal_log_prob(next_latents, mean, std)
+    log_prob = _normal_log_prob(next_latents, prev_sample_mean, std)
     # print(f"mean: {mean[0, 0, 0, :10, 10]}")
     # print(f"std: {std}")
     # print(f"log_probs: {log_prob}")

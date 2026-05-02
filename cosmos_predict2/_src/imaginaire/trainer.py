@@ -406,6 +406,7 @@ class trainer_grpo(ImaginaireTrainer):
         dataloader_train: torch.utils.data.DataLoader,
         dataloader_val: torch.utils.data.DataLoader,
     ) -> None:
+        self.dataloader_val = dataloader_val
         # Same initialization as base trainer
         model = model.to("cuda", memory_format=self.config.trainer.memory_format)  # type: ignore
         model.on_train_start(self.config.trainer.memory_format)
@@ -436,7 +437,9 @@ class trainer_grpo(ImaginaireTrainer):
             maybe_enable_memory_snapshot(self.config, global_step=iteration) as memory_profiler,
         ):
             dataloader_train_iter = iter(dataloader_train)
-            rollout_idx = 0
+            grpo_config = getattr(getattr(model, "config", None), "grpo", {}) or {}
+            num_updates = max(1, int(grpo_config.get("num_updates", 1)))  # type: ignore[union-attr]
+            rollout_idx = iteration // num_updates
             while True:
                 rollout_idx += 1
                 if iteration >= self.config.trainer.max_iter:
@@ -446,9 +449,9 @@ class trainer_grpo(ImaginaireTrainer):
 
                 # -------------------- Outer loop: collect rollout batch --------------------
                 # NOTE: `rollout_num_batches` is stored in model.config.grpo (dict) for simplicity.
-                rollout_num_batches = int(getattr(getattr(model, "config", None), "grpo", {}).get("rollout_num_batches", 1))  # type: ignore[union-attr]
+                rollout_num_batches = max(1, int(grpo_config.get("rollout_num_batches", 1)))  # type: ignore[union-attr]
                 rollout_batches = []
-                for _ in range(max(1, rollout_num_batches)):
+                for _ in range(rollout_num_batches):
                     try:
                         data_batch = next(dataloader_train_iter)
                     except StopIteration:
@@ -484,9 +487,6 @@ class trainer_grpo(ImaginaireTrainer):
                     model_ddp.unload_reward_model()
 
                 # -------------------- Inner loop: multiple updates on same rollout --------------------
-                num_updates = int(getattr(getattr(model, "config", None), "grpo", {}).get("num_updates", 1))  # type: ignore[union-attr]
-
-
                 # 目前是按照 rollout 阶段未打乱的 batch 进行更新，后续可以考虑按照打乱后的 batch 进行更新
                 for update_idx in range(num_updates):
                     log.info(f"update_idx = {update_idx}")
@@ -495,10 +495,8 @@ class trainer_grpo(ImaginaireTrainer):
                     if self.config.trainer.distributed_parallelism == "ddp":
                         model_ddp.module.train()
 
-                    total_b = sum(int(s.rewards.shape[0]) for s in samples_list)  # 总样本数
-                    total_b = max(1, total_b)
-
                     output_batch_accum: dict[str, torch.Tensor] = {}
+                    scalar_weight_accum: dict[str, int] = {}
                     last_loss: torch.Tensor | None = None
 
                     for batch_idx, s in enumerate(samples_list):
@@ -527,12 +525,16 @@ class trainer_grpo(ImaginaireTrainer):
                                 model_ddp.on_after_backward()
                             self.callbacks.on_after_backward(model_ddp, iteration=iteration)
 
-                        # 标量加权平均，tensor 拼接
+                        # 标量指标按一个 optimizer step 中各 batch 的样本量进行加权平均
+                        # Batch-aligned tensors are concatenated so downstream callbacks can reduce them explicitly.
                         b_i = int(s.rewards.shape[0])
                         for k, v in out_i.items():
                             if torch.is_tensor(v):
                                 if v.ndim == 0:
-                                    output_batch_accum[k] = output_batch_accum.get(k, torch.zeros_like(v)) + v.detach()
+                                    output_batch_accum[k] = output_batch_accum.get(k, torch.zeros_like(v)) + (
+                                        v.detach() * b_i
+                                    )
+                                    scalar_weight_accum[k] = scalar_weight_accum.get(k, 0) + b_i
                                 elif v.ndim >= 1 and v.shape[0] == b_i:
                                     if k not in output_batch_accum:
                                         output_batch_accum[k] = v.detach()
@@ -570,11 +572,15 @@ class trainer_grpo(ImaginaireTrainer):
                             # print(f"last_loss: {last_loss}")
                             if last_loss is None:
                                 last_loss = torch.zeros((), device="cuda")
+                            output_batch_log = {  # 除以该 optimizer step 总样本数进行平均
+                                k: (v / scalar_weight_accum[k] if k in scalar_weight_accum else v)
+                                for k, v in output_batch_accum.items()
+                            }
                             self.callbacks.on_training_step_batch_end(
-                                model, rollout_batch, output_batch_accum, last_loss, iteration=iteration
+                                model, rollout_batch, output_batch_log, last_loss, iteration=iteration
                             )
                             self.callbacks.on_training_step_end(
-                                model, rollout_batch, output_batch_accum, last_loss, iteration=iteration
+                                model, rollout_batch, output_batch_log, last_loss, iteration=iteration
                             )
 
                             if iteration % self.config.checkpoint.save_iter == 0:
@@ -590,6 +596,7 @@ class trainer_grpo(ImaginaireTrainer):
                                 break
                             
                             output_batch_accum = {}
+                            scalar_weight_accum = {}
                             last_loss = None
 
                     log.info(loss_scaled)

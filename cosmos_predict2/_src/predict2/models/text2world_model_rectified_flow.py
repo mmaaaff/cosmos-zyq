@@ -526,7 +526,7 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
         guidance: float = 1.5,
         seed: int = 1,
         state_shape: Tuple | None = None,
-        n_sample: int | None = None,
+        n_sample: int | None = None,  # 这里 n_sample 实际上没有作用, 预期应当等于 batch size, 并不能控制每个 prompt 产生几个样本
         is_negative_prompt: bool = False,
         num_steps: int = 35,
         shift: float = 5.0,
@@ -598,7 +598,7 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
                 # velocity_pred.unsqueeze(0), t, latents[0].unsqueeze(0), return_dict=False, generator=seed_g  # velocity_pred.unsqueeze(0): [1, b, C, T, H, W];  latents[0].unsqueeze(0): [1, C, T, H, W]
                 velocity_pred.unsqueeze(0), t, latents.unsqueeze(0), return_dict=False, generator=seed_g  # zyq: 上面那个原版感觉有 bug
             )[0]
-            latents = temp_x0.squeeze(0)
+            latents = temp_x0.squeeze(0)  # 实际上 unsqueeze 再 squeeze 似乎是不必要的, 根据 sample_scheduler 的内部实现，似乎是按照输入 bcthw 形状来设计的 
 
         if self.net.is_context_parallel_enabled:
             latents = cat_outputs_cp(latents, seq_dim=2, cp_group=self.get_context_parallel_group())

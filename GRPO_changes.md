@@ -16,6 +16,10 @@
 - `cosmos_predict2/_src/predict2/action/models/action_conditioned_video2world_rectified_flow_grpo_model.py`
   - **内容**：GRPO 版模型（`ActionVideo2WorldModelRectifiedFlowGRPO` + Config），通过覆盖 `training_step` 实现：online rollout → reward → advantage → clipped loss（保持 `ImaginaireTrainer` 不变）。
 - `cosmos_predict2/_src/predict2/action/configs/action_conditioned/reward.py`，使用 hydra 注册了各类 reward
+- `cosmos_predict2/experiments/scripts`: 一些训练和推理的 bash 脚本
+- `assets/action_conditioned/basic/concate_videos.py`: 拼接视频进行可视化对比
+- `cosmos_predict2/_src/predict2/action/callbacks/rollout_reward_validation.py`: 添加了一个验证 callback 函数
+- 
 
 ## 修改文件
 - `cosmos_predict2/_src/predict2/action/configs/action_conditioned/model.py`

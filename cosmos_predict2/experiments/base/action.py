@@ -152,7 +152,7 @@ CHECKPOINT_DIR=$CHECKPOINTS_DIR/$CHECKPOINT_ITER
 
 python ./scripts/convert_distcp_to_pt.py $CHECKPOINT_DIR/model $CHECKPOINT_DIR
 
-SAVE_ROOT=outputs/action_conditioned/basic/CT/iter_000001700_model.pt/20steps
+SAVE_ROOT=outputs/action_conditioned/basic/CT2/iter_000000990_model.pt
 python examples/action_conditioned.py \
 -i assets/action_conditioned/basic/inference_params.json -o $SAVE_ROOT \
 --save-root $SAVE_ROOT \
@@ -160,6 +160,7 @@ python examples/action_conditioned.py \
 --checkpoint-path $CHECKPOINT_DIR/model.pt \
 --experiment ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker
 """
+rollout_n=4
 ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base = LazyDict(
     dict(
         defaults=[
@@ -183,12 +184,12 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base = LazyDict(
             weight_decay=0.1,
         ),
         checkpoint=dict(
-            save_iter=50,
+            save_iter=10,
             # pyrefly: ignore  # missing-attribute
             load_path="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned/cosmos_predict_v2p5/2b_bridge_action_conditioned/checkpoints/iter_000150000/model_ema_fp32.pt",  # 直接使用 post-train 过的模型
             #load_path=get_checkpoint_path("s3://bucket/cosmos_predict2_action_conditioned/action_conditional/cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320/checkpoints/iter_000016000/model"),
-            load_training_state=False,
-            strict_resume=False,
+            load_training_state=True,
+            strict_resume=True,
             load_from_object_store=dict(
                 enabled=False,
             ),
@@ -198,8 +199,8 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base = LazyDict(
         ),
         trainer=dict(
             straggler_detection=dict(enabled=False),
-            logging_iter=2,
-            grad_accum_iter=4,  # note: 与 rollout_num_batches 一致
+            logging_iter=5,
+            grad_accum_iter=rollout_n,  # note: 与 rollout_num_batches 一致
             # resume_iteration=0,  # 强制 trainer_grpo 的 iteration 起点。设置为非 None 值则禁止加载 optimizer, scheduler, grad_scaler 状态，设为 None 则视作继续训练，加载这些状态
             # NOTE: GRPO 训练通常更慢；可以视情况把采样 callback 频率调低
             callbacks=dict(
@@ -207,14 +208,14 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base = LazyDict(
                     clip_norm=1,  # following Dance-GRPO
                 ),
                 every_n_sample_reg=dict(
-                    every_n=100,
+                    every_n=200,
                     do_x0_prediction=False,
                     guidance=[0, 3, 7],
                     fps=16,
                     save_s3=False,
                 ),
                 every_n_sample_ema=dict(
-                    every_n=100,
+                    every_n=200,
                     do_x0_prediction=False,
                     guidance=[0, 3, 7],
                     fps=16,
@@ -224,7 +225,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base = LazyDict(
                     save_s3=False,
                 ),
                 iter_speed=dict(
-                    hit_thres=100,
+                    hit_thres=200,
                     save_s3=False,
                 ),
                 device_monitor=dict(
@@ -259,15 +260,15 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base = LazyDict(
                 grpo=dict(
                     num_steps=20,
                     shift=5.0,  # Cosmos 原始代码 5.0，但感觉应该没用？因为似乎 use_kerras_sigma_at_inference 是 True（不过 grpo 这里我已经改成 flase）
-                    eta=0.2,  # GRPO: 0.3
+                    eta=0.3,  # GRPO: 0.3
                     guidance=0.0,  # 若 guidance > 0, 则 num_updates 应该要降低
                     seed=1,
                     use_group_adv=True,
                     num_generations=12,  # 一个 prompt 生成多少个样本，即 group size
                     init_same_noise=True,
                     timestep_fraction=0.6,
-                    rollout_num_batches=4,  # 一次 rollout 多少个 batch，注意这里实际值要乘以 GPU 数量再乘以 batch_size 才得到 prompts per iter
-                    num_updates=4,  # 用一组 rollout 训练多少轮
+                    rollout_num_batches=rollout_n,  # 一次 rollout 多少个 batch，注意这里实际值要乘以 GPU 数量再乘以 batch_size 才得到 prompts per iter
+                    num_updates=2,  # 用一组 rollout 训练多少轮
                     clip_range=1e-4,
                     adv_clip_max=5.0,
                 ),
@@ -317,6 +318,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_vjepa = LazyDict(
             "_self_",
         ],
         job=dict(
+            group="vjepa",
             name="2b_bridge_action_conditioned_grpo_vjepa",
         ),
     ),
@@ -338,15 +340,9 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_optical_flow = LazyDict(
             "_self_",
         ],
         job=dict(
+            group="OF",
             name="2b_bridge_action_conditioned_grpo_optical_flow",
-            wandb_reuse_id=True,
-            wandb_resume="must",
         ),
-        checkpoint=dict(
-            # load_path="",
-            load_training_state=True,
-            strict_resume=True,
-            ),
     ),
     flags={"allow_objects": True},
 )
@@ -366,6 +362,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker = LazyDict(
             "_self_",
         ],
         job=dict(
+            group="cotracker2",
             name="2b_bridge_action_conditioned_grpo_cotracker",
         ),
     ),

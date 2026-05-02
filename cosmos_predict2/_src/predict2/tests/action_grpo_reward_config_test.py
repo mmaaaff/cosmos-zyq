@@ -171,6 +171,50 @@ def test_collect_rollout_and_rewards_caches_reward_metrics(monkeypatch):
     assert samples.latents.shape[1] == 1
     assert samples.next_latents.shape[1] == 1
     assert samples.old_log_probs.shape[1] == 1
+    assert samples.advantage_metrics == {}
+
+
+def _make_grpo_model_with_composite_reward(weights: dict[str, float]):
+    model = object.__new__(grpo_model_module.ActionVideo2WorldModelRectifiedFlowGRPO)
+    model.tensor_kwargs = {"device": "cpu", "dtype": torch.float32}
+    model._reward_model = CompositeRewardModel(
+        components={name: {"weight": weight, "reward": DummyRewardModel()} for name, weight in weights.items()}
+    )
+    return model
+
+
+def test_mixed_reward_advantage_uses_weighted_component_advantages():
+    model = _make_grpo_model_with_composite_reward({"a": 0.25, "b": 0.75})
+    hp = SimpleNamespace(use_group_adv=True, num_generations=2, adv_clip_max=100.0)
+    reward_metrics = {
+        "a": torch.tensor([1.0, 3.0, 10.0, 14.0], dtype=torch.float32),
+        "b": torch.tensor([5.0, 1.0, 2.0, 8.0], dtype=torch.float32),
+    }
+    raw_weighted_reward = 0.25 * reward_metrics["a"] + 0.75 * reward_metrics["b"]
+
+    advantages, advantage_metrics = model._compute_rollout_advantages(raw_weighted_reward, reward_metrics, hp)
+
+    expected_a = model._compute_advantage_unclipped(reward_metrics["a"], hp)
+    expected_b = model._compute_advantage_unclipped(reward_metrics["b"], hp)
+    expected_mixed = 0.25 * expected_a + 0.75 * expected_b
+    raw_weighted_advantage = model._compute_advantage(raw_weighted_reward, hp)
+
+    assert torch.allclose(advantage_metrics["a"], expected_a)
+    assert torch.allclose(advantage_metrics["b"], expected_b)
+    assert torch.allclose(advantages, expected_mixed)
+    assert not torch.allclose(advantages, raw_weighted_advantage)
+
+
+def test_mixed_reward_advantage_requires_matching_component_metrics():
+    model = _make_grpo_model_with_composite_reward({"a": 0.25, "b": 0.75})
+    hp = SimpleNamespace(use_group_adv=True, num_generations=2, adv_clip_max=100.0)
+
+    with pytest.raises(ValueError, match="component rewards must match configured weights exactly"):
+        model._compute_rollout_advantages(
+            rewards=torch.zeros(2, dtype=torch.float32),
+            reward_metrics={"a": torch.zeros(2, dtype=torch.float32)},
+            hp=hp,
+        )
 
 
 def test_compute_grpo_loss_logs_reward_component_metrics(monkeypatch):
@@ -209,6 +253,10 @@ def test_compute_grpo_loss_logs_reward_component_metrics(monkeypatch):
         advantages=torch.tensor([0.5], dtype=torch.float32),
         velocity_fn=lambda init_noise, latents, t: torch.zeros_like(latents),
         is_image_batch=False,
+        advantage_metrics={
+            "ssim": torch.tensor([0.0], dtype=torch.float32),
+            "vjepa2": torch.tensor([1.0], dtype=torch.float32),
+        },
     )
 
     output_batch, loss = model.compute_grpo_loss(samples, update_seed=0)
@@ -218,6 +266,10 @@ def test_compute_grpo_loss_logs_reward_component_metrics(monkeypatch):
     assert "reward_component_ssim_std" in output_batch
     assert "reward_component_vjepa2_mean" in output_batch
     assert "reward_component_vjepa2_std" in output_batch
+    assert "adv_component_ssim_mean" in output_batch
+    assert "adv_component_ssim_std" in output_batch
+    assert "adv_component_vjepa2_mean" in output_batch
+    assert "adv_component_vjepa2_std" in output_batch
 
 
 def test_grpo_sde_step_uses_dancegrpo_score_correction():

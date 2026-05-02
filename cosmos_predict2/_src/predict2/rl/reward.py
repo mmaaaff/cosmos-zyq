@@ -140,7 +140,8 @@ class CompositeRewardModel(BaseRewardModel):
                 reward = reward.to(device=total_reward.device, dtype=torch.float32)
                 if reward.shape != total_reward.shape:
                     raise ValueError(
-                        f"CompositeRewardModel component '{name}' returned shape {tuple(reward.shape)}, "
+                        f"CompositeRewardModel component '{name}' must return shape [B], "
+                        f"got shape {tuple(reward.shape)}, "
                         f"expected {tuple(total_reward.shape)}"
                     )
 
@@ -154,6 +155,9 @@ class CompositeRewardModel(BaseRewardModel):
 
     def get_last_metrics(self) -> Dict[str, torch.Tensor]:
         return dict(self._last_component_rewards)
+
+    def get_component_weights(self) -> dict[str, float]:
+        return dict(self.reward_weights)
 
     def unload(self, clear_cuda_cache: bool = True) -> None:
         for reward_model in self.reward_models.values():
@@ -712,7 +716,101 @@ class CoTrackerCenteredVelocityReward(BaseRewardModel):
             return torch.sum(diff * diff, dim=-1)
         return torch.sqrt(torch.sum(diff * diff, dim=-1) + self.eps**2)
 
-    def forward(self, inp: RewardInput) -> torch.Tensor:
+    @staticmethod
+    def _video_tchw_to_uint8_thwc(video_tchw: torch.Tensor) -> np.ndarray:
+        video = video_tchw.detach().to(dtype=torch.float32).clamp(0.0, 255.0).round().to(torch.uint8).cpu()
+        if video.shape[1] == 1:
+            video = video.repeat(1, 3, 1, 1)
+        elif video.shape[1] > 3:
+            video = video[:, :3]
+        return video.permute(0, 2, 3, 1).contiguous().numpy()
+
+    @staticmethod
+    def _draw_velocity_arrows(
+        frame: np.ndarray,
+        points_xy: np.ndarray,
+        deltas_xy: np.ndarray,
+        active_mask: np.ndarray,
+    ) -> np.ndarray:
+        from PIL import Image, ImageDraw
+
+        image = Image.fromarray(frame.copy())
+        draw = ImageDraw.Draw(image)
+        for point_xy, delta_xy, is_active in zip(points_xy, deltas_xy, active_mask):
+            x0, y0 = float(point_xy[0]), float(point_xy[1])
+            dx, dy = float(delta_xy[0]), float(delta_xy[1])
+            x1, y1 = x0 + dx, y0 + dy
+            color = (255, 0, 0) if bool(is_active) else (0, 0, 255)
+
+            draw.line([(x0, y0), (x1, y1)], fill=color, width=2)
+            length = float(np.sqrt(dx * dx + dy * dy))
+            if length < 1e-6:
+                continue
+
+            ux, uy = dx / length, dy / length
+            head_len = min(max(length * 0.25, 3.0), 8.0)
+            perp_x, perp_y = -uy, ux
+            left = (x1 - head_len * ux + 0.5 * head_len * perp_x, y1 - head_len * uy + 0.5 * head_len * perp_y)
+            right = (x1 - head_len * ux - 0.5 * head_len * perp_x, y1 - head_len * uy - 0.5 * head_len * perp_y)
+            draw.polygon([(x1, y1), left, right], fill=color)
+
+        return np.asarray(image)
+
+    def _save_velocity_visualization(
+        self,
+        *,
+        pred: torch.Tensor,
+        gt: torch.Tensor,
+        delta_pred: torch.Tensor,
+        delta_gt: torch.Tensor,
+        active_mask: torch.Tensor,
+        batch_size: int,
+        num_anchors: int,
+        output_dir: str | os.PathLike[str],
+        fps: int,
+    ) -> None:
+        import imageio
+
+        os.makedirs(output_dir, exist_ok=True)
+        grid_points = self._get_grid_points(device=delta_gt.device).squeeze(0).detach().cpu().numpy()  # [N, 2]
+        delta_pred = delta_pred.view(batch_size, num_anchors, -1, 2).detach().cpu().numpy()  # [B, A, N, 2]
+        delta_gt = delta_gt.view(batch_size, num_anchors, -1, 2).detach().cpu().numpy()  # [B, A, N, 2]
+        active_mask = active_mask.view(batch_size, num_anchors, -1).detach().cpu().numpy()  # [B, A, N]
+
+        for batch_idx in range(batch_size):
+            pred_frames = self._video_tchw_to_uint8_thwc(pred[batch_idx])  # [T, H, W, C]
+            gt_frames = self._video_tchw_to_uint8_thwc(gt[batch_idx])  # [T, H, W, C]
+            frames = []
+            for frame_idx in range(gt_frames.shape[0]):
+                gt_frame = gt_frames[frame_idx]
+                pred_frame = pred_frames[frame_idx]
+                anchor_idx = frame_idx - self.temporal_radius
+                if 0 <= anchor_idx < num_anchors:
+                    gt_frame = self._draw_velocity_arrows(
+                        gt_frame,
+                        grid_points,
+                        delta_gt[batch_idx, anchor_idx],
+                        active_mask[batch_idx, anchor_idx],
+                    )
+                    pred_frame = self._draw_velocity_arrows(
+                        pred_frame,
+                        grid_points,
+                        delta_pred[batch_idx, anchor_idx],
+                        active_mask[batch_idx, anchor_idx],
+                    )
+                frames.append(np.concatenate([gt_frame, pred_frame], axis=1))
+
+            output_path = os.path.join(os.fspath(output_dir), f"cotracker_velocity_b{batch_idx}.mp4")
+            imageio.mimwrite(output_path, frames, fps=int(fps), quality=8)
+            print(f"Saved CoTracker velocity visualization to {output_path}")
+
+    def _forward_impl(
+        self,
+        inp: RewardInput,
+        *,
+        visualize_output_dir: str | os.PathLike[str] | None = None,
+        visualize_fps: int = 10,
+    ) -> torch.Tensor:
         if inp.video is None:
             raise ValueError("CoTrackerCenteredVelocityReward requires inp.video")
         gt_video = inp.metadata.get("gt_video")
@@ -755,12 +853,14 @@ class CoTrackerCenteredVelocityReward(BaseRewardModel):
         gt_visible = gt_visibility[:, left_idx] & gt_visibility[:, right_idx]  # [B*A, N]
         pred_visible = pred_visibility[:, left_idx] & pred_visibility[:, right_idx]  # [B*A, N]
         speed_gt = torch.sqrt(torch.sum(delta_gt * delta_gt, dim=-1) + self.eps**2) / duration  # [B*A, N]
+        print(f"speed_gt[:10]: {speed_gt[:10]}")
 
         active_mask = gt_visible & (speed_gt > self.tau)  # [B*A, N]
         if self.min_active_points > 0:
             # 如果 active_mask 中 active 的点数小于 min_active_points，则使用 gt_visible 作为 active_mask，即不进行阈值筛选
             fallback_mask = gt_visible  # [B*A, N]
             use_fallback = active_mask.sum(dim=-1) < self.min_active_points  # [B*A]
+            print(f"use_fallback: {use_fallback}")
             active_mask = torch.where(use_fallback.unsqueeze(-1), fallback_mask, active_mask)  # [B*A, N]
 
         point_error = self._compute_point_error(delta_pred, delta_gt)  # [B*A, N]
@@ -769,6 +869,7 @@ class CoTrackerCenteredVelocityReward(BaseRewardModel):
 
         active_mask_f = active_mask.to(dtype=point_error.dtype)  # [B*A, N]
         valid_anchor = active_mask.any(dim=-1)  # [B*A], 即各个 anchor 是否有效（有至少一个 active 点）
+        print(f"valid_anchor: {valid_anchor}")
         anchor_denom = active_mask_f.sum(dim=-1).clamp_min(1.0)  # [B*A], clamp_min 是因为否则无效 anchor 会出现除以 0
         # 对每个 anchor，计算所有 active 点的 point_error 的平均值
         anchor_reward = -(point_error * active_mask_f).sum(dim=-1) / anchor_denom  # [B*A]
@@ -779,10 +880,36 @@ class CoTrackerCenteredVelocityReward(BaseRewardModel):
         valid_anchor_f = valid_anchor.to(dtype=anchor_reward.dtype)  # [B, A]
 
         valid_sample = valid_anchor.any(dim=-1)  # [B], 即各个 sample 是否有效（有至少一个有效 anchor）
+        print(f"valid_sample: {valid_sample}")
         sample_denom = valid_anchor_f.sum(dim=-1).clamp_min(1.0)  # [B], clamp_min 是因为否则无效 sample 会出现除以 0
         reward = (anchor_reward * valid_anchor_f).sum(dim=-1) / sample_denom  # [B]
         reward = torch.where(valid_sample, reward, torch.zeros_like(reward))  # [B]
+
+        if visualize_output_dir is not None:
+            self._save_velocity_visualization(
+                pred=pred,
+                gt=gt,
+                delta_pred=delta_pred,
+                delta_gt=delta_gt,
+                active_mask=active_mask,
+                batch_size=b,
+                num_anchors=num_anchors,
+                output_dir=visualize_output_dir,
+                fps=visualize_fps,
+            )
+
         return reward.to(dtype=torch.float32, device=inp.video.device)
+
+    def forward(self, inp: RewardInput) -> torch.Tensor:
+        return self._forward_impl(inp)
+
+    def forward_test(
+        self,
+        inp: RewardInput,
+        output_dir: str | os.PathLike[str],
+        fps: int = 4,
+    ) -> torch.Tensor:
+        return self._forward_impl(inp, visualize_output_dir=output_dir, visualize_fps=fps)
 
 
 class VJEPA2Reward(BaseRewardModel):

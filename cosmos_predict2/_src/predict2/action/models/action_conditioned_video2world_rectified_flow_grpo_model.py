@@ -19,7 +19,7 @@ Annotation:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -36,7 +36,7 @@ from cosmos_predict2._src.predict2.action.models.action_conditioned_video2world_
     Video2WorldModelRectifiedFlowConfig,
 )
 from cosmos_predict2._src.predict2.rl.grpo_sde_sampler import grpo_sde_step
-from cosmos_predict2._src.predict2.rl.reward import RewardInput
+from cosmos_predict2._src.predict2.rl.reward import CompositeRewardModel, RewardInput
 
 
 def _dist_is_initialized() -> bool:
@@ -145,6 +145,7 @@ class GrpoRolloutSamples:
     advantages: torch.Tensor  # [B]
     velocity_fn: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]
     is_image_batch: bool
+    advantage_metrics: Dict[str, torch.Tensor] = field(default_factory=dict)
 
 
 @attrs.define(slots=False)
@@ -230,11 +231,19 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         return metrics
 
     @staticmethod
-    def _reward_metric_log_key(name: str, stat: str) -> str:
+    def _safe_metric_name(name: str) -> str:
         safe_name = re.sub(r"[^0-9a-zA-Z_]+", "_", name).strip("_")
         if not safe_name:
             safe_name = "unnamed"
-        return f"reward_component_{safe_name}_{stat}"
+        return safe_name
+
+    @staticmethod
+    def _reward_metric_log_key(name: str, stat: str) -> str:
+        return f"reward_component_{ActionVideo2WorldModelRectifiedFlowGRPO._safe_metric_name(name)}_{stat}"
+
+    @staticmethod
+    def _advantage_metric_log_key(name: str, stat: str) -> str:
+        return f"adv_component_{ActionVideo2WorldModelRectifiedFlowGRPO._safe_metric_name(name)}_{stat}"
 
     def _maybe_repeat_batch_for_group(self, data_batch: Dict[str, torch.Tensor], num_generations: int) -> Dict[str, torch.Tensor]:
         """
@@ -268,6 +277,14 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         """
         Compute advantages, supporting group-normalized mode.
         """
+        adv = self._compute_advantage_unclipped(rewards, hp)
+        adv = torch.clamp(adv, -hp.adv_clip_max, hp.adv_clip_max)  # shape: [B]
+        return adv
+
+    def _compute_advantage_unclipped(self, rewards: torch.Tensor, hp: _GrpoHyperParams) -> torch.Tensor:
+        """
+        Compute normalized advantages without applying the final advantage clip.
+        """
 
         # rewards shape: [B]
         rewards_f = rewards.to(torch.float32)
@@ -288,8 +305,52 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             std = gathered.std().clamp_min(1e-8)
             adv = (rewards_f - mean) / std  # shape: [B]
 
-        adv = torch.clamp(adv, -hp.adv_clip_max, hp.adv_clip_max)  # shape: [B]
         return adv
+
+    def _compute_rollout_advantages(
+        self,
+        rewards: torch.Tensor,
+        reward_metrics: Dict[str, torch.Tensor],
+        hp: _GrpoHyperParams,
+    ) -> tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        Compute rollout advantages.
+
+        For mixed reward, follow DanceGRPO by normalizing each component reward into an advantage first,
+        then combining component advantages with configured weights. The raw weighted reward remains available
+        for logging as `reward_mean` / `reward_std`.
+        """
+
+        if not isinstance(self._reward_model, CompositeRewardModel):
+            advantages = self._compute_advantage(rewards, hp).to(
+                device=self.tensor_kwargs["device"], dtype=torch.float32
+            )
+            return advantages, {}
+
+        component_weights = self._reward_model.get_component_weights()
+        weight_names = set(component_weights.keys())
+        metric_names = set(reward_metrics.keys())
+        if metric_names != weight_names:
+            missing = sorted(weight_names - metric_names)
+            unexpected = sorted(metric_names - weight_names)
+            raise ValueError(
+                "CompositeRewardModel component rewards must match configured weights exactly. "
+                f"Missing component rewards: {missing}; unexpected component rewards: {unexpected}."
+            )
+
+        advantage_metrics: Dict[str, torch.Tensor] = {}
+        total_advantage: torch.Tensor | None = None
+        for name, weight in component_weights.items():
+            component_advantage = self._compute_advantage_unclipped(reward_metrics[name], hp).to(
+                device=self.tensor_kwargs["device"], dtype=torch.float32
+            )
+            advantage_metrics[name] = component_advantage
+            weighted_advantage = float(weight) * component_advantage
+            total_advantage = weighted_advantage if total_advantage is None else total_advantage + weighted_advantage
+
+        assert total_advantage is not None
+        total_advantage = torch.clamp(total_advantage, -hp.adv_clip_max, hp.adv_clip_max)
+        return total_advantage, advantage_metrics
 
     def _ensure_action_dtype_inplace(self, data_batch: Dict[str, torch.Tensor]) -> None:
         """
@@ -497,12 +558,12 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         ).to(device=self.tensor_kwargs["device"], dtype=torch.float32)
         reward_metrics = self._extract_reward_metrics(batch_size=int(rewards.shape[0]))
 
-        advantages = self._compute_advantage(rewards, hp).to(device=self.tensor_kwargs["device"], dtype=torch.float32)
+        advantages, advantage_metrics = self._compute_rollout_advantages(rewards, reward_metrics, hp)
 
         # Match DanceGRPO's training sample construction: rollout still runs all S transitions
         # to produce the final sample/reward, but the last transition sigma[S-1] -> sigma[S]
         # is excluded from the policy loss.
-        train_latents_s = latents_s[:, :-1]
+        train_latents_s = latents_s[:, :-1]  # [B, S-1, ...]
         train_next_latents_s = next_latents_s[:, :-1]
         train_old_log_probs_s = old_log_probs_s[:, :-1]
         train_timesteps = timesteps[:-1]
@@ -520,6 +581,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             advantages=advantages.detach(),
             velocity_fn=velocity_fn,
             is_image_batch=is_image_batch,
+            advantage_metrics={k: v.detach() for k, v in advantage_metrics.items()},
         )
 
     def compute_grpo_loss(
@@ -610,6 +672,9 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         for name, metric in samples.reward_metrics.items():
             output_batch[self._reward_metric_log_key(name, "mean")] = metric.mean().detach()
             output_batch[self._reward_metric_log_key(name, "std")] = metric.std().detach()
+        for name, metric in samples.advantage_metrics.items():
+            output_batch[self._advantage_metric_log_key(name, "mean")] = metric.mean().detach()
+            output_batch[self._advantage_metric_log_key(name, "std")] = metric.std().detach()
         # 为了保证使用原本 WandbCallback 不出错，需要加一个 edm_loss 字段，这里直接把 grpo_loss 的值赋给它
         output_batch["edm_loss"] = output_batch["grpo_loss"]
         return output_batch, loss
