@@ -536,6 +536,7 @@ class CoTrackerCenteredVelocityReward(BaseRewardModel):
         min_active_points: int = 16,
         invisibility_penalty: float = 1.0,
         offline: bool = True,
+        fps_downsample_ratio: int = 1,
     ):
         super().__init__()
         if not checkpoint_path:
@@ -554,6 +555,8 @@ class CoTrackerCenteredVelocityReward(BaseRewardModel):
             raise ValueError(f"patch_size must be >= 1, got {patch_size}")
         if window_batch_size < 1:
             raise ValueError(f"window_batch_size must be >= 1, got {window_batch_size}")
+        if fps_downsample_ratio < 1:
+            raise ValueError(f"fps_downsample_ratio must be >= 1, got {fps_downsample_ratio}")
 
         input_resolution = tuple(int(v) for v in input_resolution)
         if len(input_resolution) != 2:
@@ -574,6 +577,7 @@ class CoTrackerCenteredVelocityReward(BaseRewardModel):
         self.min_active_points = int(min_active_points)
         self.invisibility_penalty = float(invisibility_penalty)
         self.offline = bool(offline)
+        self.fps_downsample_ratio = int(fps_downsample_ratio)
 
         self._model: Optional[torch.nn.Module] = None
         self._grid_points_cpu: Optional[torch.Tensor] = None
@@ -850,15 +854,21 @@ class CoTrackerCenteredVelocityReward(BaseRewardModel):
         delta_pred = pred_tracks[:, right_idx] - pred_tracks[:, left_idx]  # [B*A, N, 2]
         delta_gt = gt_tracks[:, right_idx] - gt_tracks[:, left_idx]  # [B*A, N, 2]
 
-        gt_visible = gt_visibility[:, left_idx] & gt_visibility[:, right_idx]  # [B*A, N]
+        # gt_visible = gt_visibility[:, left_idx] & gt_visibility[:, right_idx]  # [B*A, N]
         pred_visible = pred_visibility[:, left_idx] & pred_visibility[:, right_idx]  # [B*A, N]
-        speed_gt = torch.sqrt(torch.sum(delta_gt * delta_gt, dim=-1) + self.eps**2) / duration  # [B*A, N]
+        speed_gt = (
+            torch.sqrt(torch.sum(delta_gt * delta_gt, dim=-1) + self.eps**2)
+            / duration
+            * self.fps_downsample_ratio
+        )  # [B*A, N]
         print(f"speed_gt[:10]: {speed_gt[:10]}")
 
-        active_mask = gt_visible & (speed_gt > self.tau)  # [B*A, N]
+        # active_mask = gt_visible & (speed_gt > self.tau)  # [B*A, N]
+        active_mask = speed_gt > self.tau  # [B*A, N]
         if self.min_active_points > 0:
             # 如果 active_mask 中 active 的点数小于 min_active_points，则使用 gt_visible 作为 active_mask，即不进行阈值筛选
-            fallback_mask = gt_visible  # [B*A, N]
+            # fallback_mask = gt_visible  # [B*A, N]
+            fallback_mask = torch.zeros_like(active_mask)  # [B*A, N]
             use_fallback = active_mask.sum(dim=-1) < self.min_active_points  # [B*A]
             print(f"use_fallback: {use_fallback}")
             active_mask = torch.where(use_fallback.unsqueeze(-1), fallback_mask, active_mask)  # [B*A, N]

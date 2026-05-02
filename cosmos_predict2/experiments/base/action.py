@@ -15,7 +15,9 @@
 
 from hydra.core.config_store import ConfigStore
 
+from cosmos_predict2._src.imaginaire.lazy_config import LazyCall as L
 from cosmos_predict2._src.imaginaire.lazy_config import LazyDict
+from cosmos_predict2._src.predict2.action.callbacks.rollout_reward_validation import ActionRolloutRewardValidation
 from cosmos_predict2._src.predict2.action.configs.action_conditioned.reward import (
     CoTrackerCenteredVelocityRewardConfig,
     VJEPA2RewardConfig,
@@ -238,7 +240,20 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base = LazyDict(
                 dataloader_speed=dict(
                     save_s3=False,
                 ),
-            ),
+            #     rollout_reward_validation=L(ActionRolloutRewardValidation)(
+            #         every_n=200,
+            #         max_eval_episodes=8,
+            #         max_chunks_per_episode=4,
+            #         save_video_count=4,
+            #         sampler_type="unipc",
+            #         num_steps=None,
+            #         guidance=None,
+            #         shift=None,
+            #         seed=0,
+            #         save_fps=4,
+            #         use_ema=False,
+            #     ),
+            # ),
         ),
         model_parallel=dict(
             context_parallel_size=1,
@@ -365,6 +380,13 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker = LazyDict(
             group="cotracker2",
             name="2b_bridge_action_conditioned_grpo_cotracker",
         ),
+        model=dict(
+            config=dict(
+                reward=dict(
+                    fps_downsample_ratio="${dataloader_train.sampler.dataset.fps_downsample_ratio}",
+                ),
+            ),
+        ),
     ),
     flags={"allow_objects": True},
 )
@@ -391,7 +413,10 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_mixed_reward = LazyDict(
                     components=dict(
                         cotracker=dict(
                             weight=0.7,
-                            reward=CoTrackerCenteredVelocityRewardConfig,
+                            reward=dict(
+                                CoTrackerCenteredVelocityRewardConfig,
+                                fps_downsample_ratio="${dataloader_train.sampler.dataset.fps_downsample_ratio}",
+                            ),
                         ),
                         vjepa2=dict(
                             weight=0.3,

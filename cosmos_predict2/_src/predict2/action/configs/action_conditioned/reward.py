@@ -58,6 +58,7 @@ CoTrackerCenteredVelocityRewardConfig: LazyDict = L(CoTrackerCenteredVelocityRew
     min_active_points=16,
     invisibility_penalty=1.0,
     offline=True,
+    fps_downsample_ratio=1,
 )
 
 VJEPA2RewardConfig: LazyDict = L(VJEPA2Reward)(

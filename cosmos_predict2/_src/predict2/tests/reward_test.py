@@ -43,9 +43,9 @@ python - <<'PY'
 from cosmos_predict2._src.predict2.tests.reward_test import run_cotracker_forward_test
 
 reward = run_cotracker_forward_test(
-    pred_video_path="/path/to/pred.mp4",
-    gt_video_path="/path/to/gt.mp4",
-    output_dir="/path/to/output_dir",
+    pred_video_path="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/outputs/action_conditioned/basic/OF/000001000/20/model/0_chunk.mp4",
+    gt_video_path="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/outputs/action_conditioned/basic/OF/000001000/20/model/0_chunk.mp4",
+    output_dir="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/outputs/action_conditioned/basic/test",
     checkpoint_path="ckpt/cotracker/scaled_offline.pth",
     device="cuda",
 )
@@ -59,6 +59,7 @@ def run_cotracker_forward_test(
     output_dir: str,
     checkpoint_path: str = "ckpt/cotracker/scaled_offline.pth",
     device: str = "cuda",
+    fps_downsample_ratio: int = 1,
 ) -> torch.Tensor:
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"CoTracker checkpoint not found: {checkpoint_path}")
@@ -81,6 +82,7 @@ def run_cotracker_forward_test(
         min_active_points=16,
         invisibility_penalty=1.0,
         offline=True,
+        fps_downsample_ratio=fps_downsample_ratio,
     )
     return reward.forward_test(
         RewardInput(video=pred, text=None, action=None, metadata={"gt_video": gt}),
