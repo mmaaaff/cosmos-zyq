@@ -240,20 +240,20 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base = LazyDict(
                 dataloader_speed=dict(
                     save_s3=False,
                 ),
-            #     rollout_reward_validation=L(ActionRolloutRewardValidation)(
-            #         every_n=200,
-            #         max_eval_episodes=8,
-            #         max_chunks_per_episode=4,
-            #         save_video_count=4,
-            #         sampler_type="unipc",
-            #         num_steps=None,
-            #         guidance=None,
-            #         shift=None,
-            #         seed=0,
-            #         save_fps=4,
-            #         use_ema=False,
-            #     ),
-            # ),
+                # rollout_reward_validation=L(ActionRolloutRewardValidation)(
+                #     every_n=200,
+                #     max_eval_episodes=8,
+                #     max_chunks_per_episode=4,
+                #     save_video_count=4,
+                #     sampler_type="unipc",
+                #     num_steps=None,
+                #     guidance=None,
+                #     shift=None,
+                #     seed=0,
+                #     save_fps=4,
+                #     use_ema=False,
+                # ),
+            ),
         ),
         model_parallel=dict(
             context_parallel_size=1,
@@ -283,7 +283,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base = LazyDict(
                     init_same_noise=True,
                     timestep_fraction=0.6,
                     rollout_num_batches=rollout_n,  # 一次 rollout 多少个 batch，注意这里实际值要乘以 GPU 数量再乘以 batch_size 才得到 prompts per iter
-                    num_updates=2,  # 用一组 rollout 训练多少轮
+                    num_updates=4,  # 用一组 rollout 训练多少轮
                     clip_range=1e-4,
                     adv_clip_max=5.0,
                 ),
@@ -355,7 +355,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_optical_flow = LazyDict(
             "_self_",
         ],
         job=dict(
-            group="OF",
+            group="OF2",
             name="2b_bridge_action_conditioned_grpo_optical_flow",
         ),
     ),
@@ -377,12 +377,23 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker = LazyDict(
             "_self_",
         ],
         job=dict(
-            group="cotracker2",
+            group="cotracker_4",
             name="2b_bridge_action_conditioned_grpo_cotracker",
         ),
         model=dict(
             config=dict(
                 reward=dict(
+                    checkpoint_path="ckpt/cotracker/scaled_offline.pth",
+                    input_resolution=[224, 224],
+                    patch_size=8,
+                    temporal_radius=2,
+                    tau=1.0,
+                    window_batch_size=32,
+                    score_mode="charbonnier",
+                    eps=1e-3,
+                    min_active_points=8,
+                    invisibility_penalty=0.0,
+                    offline=True,
                     fps_downsample_ratio="${dataloader_train.sampler.dataset.fps_downsample_ratio}",
                 ),
             ),
@@ -415,7 +426,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_mixed_reward = LazyDict(
                             weight=0.7,
                             reward=dict(
                                 CoTrackerCenteredVelocityRewardConfig,
-                                fps_downsample_ratio="${dataloader_train.sampler.dataset.fps_downsample_ratio}",
+                                fps_downsample_ratio="${dataloader_train.sampler.dataset.fps_downsample_ratio}",  # OmegaConf/Hydra 写法
                             ),
                         ),
                         vjepa2=dict(

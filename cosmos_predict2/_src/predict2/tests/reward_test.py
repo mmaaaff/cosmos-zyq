@@ -43,8 +43,8 @@ python - <<'PY'
 from cosmos_predict2._src.predict2.tests.reward_test import run_cotracker_forward_test
 
 reward = run_cotracker_forward_test(
-    pred_video_path="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/outputs/action_conditioned/basic/OF/000001000/20/model/0_chunk.mp4",
-    gt_video_path="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/outputs/action_conditioned/basic/OF/000001000/20/model/0_chunk.mp4",
+    pred_video_path="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/outputs/action_conditioned/basic/OF/000001000/20/model/1_chunk.mp4",
+    gt_video_path="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/outputs/action_conditioned/basic/gt/1_chunk.mp4",
     output_dir="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/outputs/action_conditioned/basic/test",
     checkpoint_path="ckpt/cotracker/scaled_offline.pth",
     device="cuda",
@@ -70,17 +70,18 @@ def run_cotracker_forward_test(
 
     pred = _read_video_as_bcthw(pred_video_path, device=device_obj)
     gt = _read_video_as_bcthw(gt_video_path, device=device_obj)
+    pred = pred[:, :, 0:gt.shape[2]]
     reward = CoTrackerCenteredVelocityReward(
         checkpoint_path=checkpoint_path,
         input_resolution=[224, 224],
-        patch_size=4,
+        patch_size=8,
         temporal_radius=2,
         tau=1.0,
         window_batch_size=32,
         score_mode="charbonnier",
         eps=1e-3,
-        min_active_points=16,
-        invisibility_penalty=1.0,
+        min_active_points=8,
+        invisibility_penalty=0.0,
         offline=True,
         fps_downsample_ratio=fps_downsample_ratio,
     )

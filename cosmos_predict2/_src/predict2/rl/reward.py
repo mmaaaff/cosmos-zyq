@@ -861,7 +861,6 @@ class CoTrackerCenteredVelocityReward(BaseRewardModel):
             / duration
             * self.fps_downsample_ratio
         )  # [B*A, N]
-        print(f"speed_gt[:10]: {speed_gt[:10]}")
 
         # active_mask = gt_visible & (speed_gt > self.tau)  # [B*A, N]
         active_mask = speed_gt > self.tau  # [B*A, N]
@@ -870,19 +869,17 @@ class CoTrackerCenteredVelocityReward(BaseRewardModel):
             # fallback_mask = gt_visible  # [B*A, N]
             fallback_mask = torch.zeros_like(active_mask)  # [B*A, N]
             use_fallback = active_mask.sum(dim=-1) < self.min_active_points  # [B*A]
-            print(f"use_fallback: {use_fallback}")
             active_mask = torch.where(use_fallback.unsqueeze(-1), fallback_mask, active_mask)  # [B*A, N]
 
-        point_error = self._compute_point_error(delta_pred, delta_gt)  # [B*A, N]
+        point_error = self._compute_point_error(delta_pred, delta_gt)  # [B*A, N], pred 和 gt 在各点的 |位移之差|
         if self.invisibility_penalty > 0.0:
             point_error = point_error + self.invisibility_penalty * (~pred_visible).to(point_error.dtype)  # [B*A, N]
 
         active_mask_f = active_mask.to(dtype=point_error.dtype)  # [B*A, N]
         valid_anchor = active_mask.any(dim=-1)  # [B*A], 即各个 anchor 是否有效（有至少一个 active 点）
-        print(f"valid_anchor: {valid_anchor}")
         anchor_denom = active_mask_f.sum(dim=-1).clamp_min(1.0)  # [B*A], clamp_min 是因为否则无效 anchor 会出现除以 0
         # 对每个 anchor，计算所有 active 点的 point_error 的平均值
-        anchor_reward = -(point_error * active_mask_f).sum(dim=-1) / anchor_denom  # [B*A]
+        anchor_reward = -(point_error * active_mask_f).sum(dim=-1) / anchor_denom / duration * self.fps_downsample_ratio # [B*A], 即 -mean(||v_pred - v_gt||)
         anchor_reward = torch.where(valid_anchor, anchor_reward, torch.zeros_like(anchor_reward))  # [B*A]
 
         anchor_reward = anchor_reward.view(b, num_anchors)  # [B, A]
@@ -890,7 +887,6 @@ class CoTrackerCenteredVelocityReward(BaseRewardModel):
         valid_anchor_f = valid_anchor.to(dtype=anchor_reward.dtype)  # [B, A]
 
         valid_sample = valid_anchor.any(dim=-1)  # [B], 即各个 sample 是否有效（有至少一个有效 anchor）
-        print(f"valid_sample: {valid_sample}")
         sample_denom = valid_anchor_f.sum(dim=-1).clamp_min(1.0)  # [B], clamp_min 是因为否则无效 sample 会出现除以 0
         reward = (anchor_reward * valid_anchor_f).sum(dim=-1) / sample_denom  # [B]
         reward = torch.where(valid_sample, reward, torch.zeros_like(reward))  # [B]

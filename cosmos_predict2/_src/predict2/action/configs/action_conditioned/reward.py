@@ -49,14 +49,14 @@ OpticalFlowRewardConfig: LazyDict = L(OpticalFlowReward)(
 CoTrackerCenteredVelocityRewardConfig: LazyDict = L(CoTrackerCenteredVelocityReward)(
     checkpoint_path="ckpt/cotracker/scaled_offline.pth",
     input_resolution=[224, 224],
-    patch_size=4,
+    patch_size=8,
     temporal_radius=2,
     tau=1.0,
     window_batch_size=32,
     score_mode="charbonnier",
     eps=1e-3,
-    min_active_points=16,
-    invisibility_penalty=1.0,
+    min_active_points=8,
+    invisibility_penalty=0.0,
     offline=True,
     fps_downsample_ratio=1,
 )

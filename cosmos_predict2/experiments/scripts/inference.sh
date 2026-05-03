@@ -1,4 +1,4 @@
-CHECKPOINT_DIR="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned_grpo/cotracker2/2b_bridge_action_conditioned_grpo_cotracker/checkpoints/iter_000001700"
+CHECKPOINT_DIR="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned_grpo/cotracker3/2b_bridge_action_conditioned_grpo_cotracker/checkpoints/iter_000000300"
 experiment="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker"
 MODEL="model.pt" # model.pt | model_ema_bf16.pt | model_ema_fp32.pt
 num_steps=20
