@@ -333,7 +333,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_vjepa = LazyDict(
             "_self_",
         ],
         job=dict(
-            group="vjepa",
+            group="vjepa2",
             name="2b_bridge_action_conditioned_grpo_vjepa",
         ),
     ),
@@ -377,7 +377,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker = LazyDict(
             "_self_",
         ],
         job=dict(
-            group="cotracker_4",
+            group="cotracker_tau=0",
             name="2b_bridge_action_conditioned_grpo_cotracker",
         ),
         model=dict(
@@ -387,7 +387,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker = LazyDict(
                     input_resolution=[224, 224],
                     patch_size=8,
                     temporal_radius=2,
-                    tau=1.0,
+                    tau=0.0,
                     window_batch_size=32,
                     score_mode="charbonnier",
                     eps=1e-3,
@@ -396,6 +396,9 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker = LazyDict(
                     offline=True,
                     fps_downsample_ratio="${dataloader_train.sampler.dataset.fps_downsample_ratio}",
                 ),
+                grpo=dict(
+                    num_updates=2,
+                )
             ),
         ),
     ),

@@ -330,7 +330,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         component_weights = self._reward_model.get_component_weights()
         weight_names = set(component_weights.keys())
         metric_names = set(reward_metrics.keys())
-        if metric_names != weight_names:
+        if metric_names != weight_names:  # reward_metrics 是通过 _extract_reward_metrics 提取出来的，那里面会有一些异常跳过条件，这里会把那里跳过的 metric 收集起来统一报错
             missing = sorted(weight_names - metric_names)
             unexpected = sorted(metric_names - weight_names)
             raise ValueError(

@@ -210,5 +210,6 @@ cython_debug/
 
 .sii
 vjepa2/
+Flow-OPD/
 CLAUDE.md
 .vscode/
