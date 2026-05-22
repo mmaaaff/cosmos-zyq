@@ -26,6 +26,8 @@ class GrpoStepOutput:
     next_latents: torch.Tensor
     pred_x0: torch.Tensor
     log_prob: torch.Tensor  # shape [B]
+    transition_mean: torch.Tensor
+    transition_std: torch.Tensor
 
 
 def _normal_log_prob(x: torch.Tensor, mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
@@ -55,6 +57,8 @@ def grpo_sde_step(
     eta: float,
     noise: torch.Tensor,
     fixed_next_latents: torch.Tensor | None = None,
+    sigma_dependent_eta: bool = False,
+    sigma_max: torch.Tensor | None = None,
 ) -> GrpoStepOutput:
     """
     One stochastic step with log_prob, using UniPC-style sigma parameterization.
@@ -67,6 +71,8 @@ def grpo_sde_step(
         eta: noise strength; eta=0 -> deterministic transition
         noise: standard normal eps with same shape as latents
         fixed_next_latents: if provided, do NOT sample; instead compute log_prob of this next state.
+        sigma_dependent_eta: if True, use Flow-OPD's eta_t = eta * sqrt(sigma / (1 - sigma)).
+        sigma_max: substitute denominator value when sigma == 1 for sigma-dependent eta.
 
     Returns:
         GrpoStepOutput with `next_latents`, `pred_x0`, `log_prob` (shape [B]).
@@ -80,15 +86,25 @@ def grpo_sde_step(
         std    = eta * sqrt(sigma - sigma_next)
     """
 
-    # Ensure float32 for stability in log-prob calculations
     latents_f = latents.to(torch.float32)
     velocity_f = velocity.to(torch.float32)
+    sigma = sigma.to(device=latents_f.device, dtype=torch.float32)
+    sigma_next = sigma_next.to(device=latents_f.device, dtype=torch.float32)
 
-    # Broadcast sigma to latents shape
     while sigma.ndim < latents_f.ndim:
         sigma = sigma.unsqueeze(-1)
     while sigma_next.ndim < latents_f.ndim:
         sigma_next = sigma_next.unsqueeze(-1)
+
+    if sigma_dependent_eta:
+        assert sigma_max is not None, "sigma_max is required when sigma_dependent_eta=True."
+        sigma_max = sigma_max.to(device=latents_f.device, dtype=torch.float32)
+        while sigma_max.ndim < latents_f.ndim:
+            sigma_max = sigma_max.unsqueeze(-1)
+        sigma_denom = torch.where(sigma == 1, sigma_max, sigma)
+        eta_t = eta * torch.sqrt(sigma / (1.0 - sigma_denom))
+    else:
+        eta_t = torch.as_tensor(eta, device=latents_f.device, dtype=torch.float32)
 
     dsigma = sigma_next - sigma  # negative when sigma decreases
     prev_sample_mean = latents_f + dsigma * velocity_f
@@ -96,10 +112,10 @@ def grpo_sde_step(
 
     # delta > 0 when sigma decreases
     delta = (sigma - sigma_next)
-    std = (eta * torch.sqrt(delta))
+    std = eta_t * torch.sqrt(delta)
 
     score_estimate = -(latents_f - pred_x0 * (1.0 - sigma)) / sigma**2
-    log_term = (-0.5 * eta**2 * score_estimate)
+    log_term = (-0.5 * eta_t**2 * score_estimate)
     prev_sample_mean = prev_sample_mean + log_term * dsigma
 
     if fixed_next_latents is None:
@@ -114,4 +130,10 @@ def grpo_sde_step(
     # print(f"mean: {mean[0, 0, 0, :10, 10]}")
     # print(f"std: {std}")
     # print(f"log_probs: {log_prob}")
-    return GrpoStepOutput(next_latents=next_latents, pred_x0=pred_x0.to(latents.dtype), log_prob=log_prob)
+    return GrpoStepOutput(
+        next_latents=next_latents,
+        pred_x0=pred_x0.to(latents.dtype),
+        log_prob=log_prob,
+        transition_mean=prev_sample_mean,
+        transition_std=std,
+    )

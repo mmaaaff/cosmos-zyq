@@ -28,6 +28,12 @@ from cosmos_predict2._src.predict2.action.models.action_conditioned_video2world_
     ActionVideo2WorldModelRectifiedFlowGRPO,
     ActionVideo2WorldModelRectifiedFlowGRPOConfig,
 )
+from cosmos_predict2._src.predict2.action.models.action_conditioned_video2world_rectified_flow_multichunk_grpo_model import (
+    ActionVideo2WorldModelRectifiedFlowMultiChunkGRPO,
+)
+from cosmos_predict2._src.predict2.action.models.action_conditioned_video2world_rectified_flow_opd_model import (
+    ActionVideo2WorldModelRectifiedFlowOPD,
+)
 
 # EDM model
 DDP_CONFIG = dict(
@@ -89,6 +95,69 @@ FSDP_RECTIFIED_FLOW_GRPO_CONFIG = dict(
                 num_generations=4,
                 adv_clip_max=5.0,
                 clip_range=1e-4,
+                sigma_dependent_eta=False,
+            ),
+        ),
+        _recursive_=False,
+    ),
+)
+
+# rectified flow model (OPD)
+FSDP_RECTIFIED_FLOW_OPD_CONFIG = dict(
+    trainer=dict(
+        distributed_parallelism="fsdp",
+    ),
+    model=L(ActionVideo2WorldModelRectifiedFlowOPD)(
+        config=ActionVideo2WorldModelRectifiedFlowGRPOConfig(
+            fsdp_shard_size=8,
+            state_t=24,
+            grpo=dict(
+                num_steps=16,
+                shift=5.0,
+                eta=0.3,
+                guidance=3.0,
+                seed=1,
+                timestep_fraction=1.0,
+                rollout_num_batches=1,
+                num_updates=4,
+                use_group_adv=True,
+                num_generations=4,
+                adv_clip_max=5.0,
+                clip_range=1e-4,
+                sigma_dependent_eta=False,
+                opd_teacher_checkpoint_path="",
+                opd_kl_scale=1.0,
+            ),
+        ),
+        _recursive_=False,
+    ),
+)
+
+# rectified flow model (multi-chunk GRPO)
+FSDP_RECTIFIED_FLOW_MULTICHUNK_GRPO_CONFIG = dict(
+    trainer=dict(
+        distributed_parallelism="fsdp",
+    ),
+    model=L(ActionVideo2WorldModelRectifiedFlowMultiChunkGRPO)(
+        config=ActionVideo2WorldModelRectifiedFlowGRPOConfig(
+            fsdp_shard_size=8,
+            state_t=24,
+            grpo=dict(
+                num_steps=16,
+                shift=5.0,
+                eta=0.3,
+                guidance=3.0,
+                seed=1,
+                timestep_fraction=1.0,
+                rollout_num_batches=1,
+                num_updates=4,
+                use_group_adv=True,
+                num_generations=4,
+                adv_clip_max=5.0,
+                clip_range=1e-4,
+                sigma_dependent_eta=False,
+                num_rollout_chunks=2,
+                action_chunk_size=12,
             ),
         ),
         _recursive_=False,
@@ -111,4 +180,16 @@ def register_model():
         package="_global_",
         name="action_conditioned_video2world_fsdp_rectified_flow_grpo",
         node=FSDP_RECTIFIED_FLOW_GRPO_CONFIG,
+    )
+    cs.store(
+        group="model",
+        package="_global_",
+        name="action_conditioned_video2world_fsdp_rectified_flow_opd",
+        node=FSDP_RECTIFIED_FLOW_OPD_CONFIG,
+    )
+    cs.store(
+        group="model",
+        package="_global_",
+        name="action_conditioned_video2world_fsdp_rectified_flow_multichunk_grpo",
+        node=FSDP_RECTIFIED_FLOW_MULTICHUNK_GRPO_CONFIG,
     )

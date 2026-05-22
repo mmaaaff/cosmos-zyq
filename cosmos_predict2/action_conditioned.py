@@ -325,7 +325,7 @@ def inference(
             # pyrefly: ignore  # implicit-import
             img_tensor = torchvision.transforms.functional.to_tensor(img_array).unsqueeze(0)
             num_video_frames = actions_chunk.shape[0] + 1
-            vid_input = torch.cat(
+            vid_input = torch.cat(  # 后续帧置为 0
                 [img_tensor, torch.zeros_like(img_tensor).repeat(num_video_frames - 1, 1, 1, 1)], dim=0
             )
             vid_input = (vid_input * 255.0).to(torch.uint8)

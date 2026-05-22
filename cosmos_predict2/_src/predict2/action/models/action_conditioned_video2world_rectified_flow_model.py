@@ -258,7 +258,9 @@ class ActionVideo2WorldModelRectifiedFlow(Text2WorldModelRectifiedFlow):
         uncondition = uncondition.edit_data_type(DataType.IMAGE if is_image_batch else DataType.VIDEO)
         _, x0, _ = self.get_data_and_condition(data_batch)
         # override condition with inference mode; num_conditional_frames used Here!
-        condition = condition.set_video_condition(
+        condition = condition.set_video_condition(  
+            # 当指定了 num_conditional_frames 时, 就会在 condition 添加两个字段，一个是 "gt_frames", 
+            # 一个是 "condition_video_input_mask_B_C_T_H_W", 后者是前 num_conditional_frames 帧全 1 其余全 0 的 tensor
             gt_frames=x0,
             random_min_num_conditional_frames=self.config.min_num_conditional_frames,
             random_max_num_conditional_frames=self.config.max_num_conditional_frames,

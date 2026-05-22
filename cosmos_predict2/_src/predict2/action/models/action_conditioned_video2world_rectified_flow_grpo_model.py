@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Tuple
 
 import attrs
 import torch
@@ -122,6 +122,7 @@ class _GrpoHyperParams:
     adv_clip_max: float = 5.0
     # PPO/GRPO clipping
     clip_range: float = 1e-4
+    sigma_dependent_eta: bool = False
 
 
 @dataclass
@@ -132,6 +133,8 @@ class GrpoRolloutSamples:
     Annotation:
     - `velocity_fn` is created once per rollout by `get_velocity_fn_from_batch` to keep conditioning fixed.
       It will use the current model parameters when invoked (so `new_log_probs` change after each update).
+    - Shape comments use `B` for the rollout batch after group repeat. If the dataloader batch is `B0` and
+      `num_generations` is `G`, then `B = B0 * G`.
     """
 
     latents: torch.Tensor  # [B, S, C, T, H, W] (T may be local under context parallel)
@@ -171,14 +174,17 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
 
     def __init__(self, config: ActionVideo2WorldModelRectifiedFlowGRPOConfig):
         super().__init__(config)
-        if config.reward is None:
+        if config.reward is None and self._requires_reward_model():
             raise ValueError(
                 "GRPO reward config is required. Provide it via Hydra group override `/reward=...` "
                 "or by setting `model.config.reward`."
             )
-        self._reward_model = lazy_instantiate(config.reward)
+        self._reward_model = None if config.reward is None else lazy_instantiate(config.reward)
 
     # ----------------------------- utilities -----------------------------
+    def _requires_reward_model(self) -> bool:
+        return True
+
     def _get_grpo_params(self) -> _GrpoHyperParams:
         d = dict(self.config.grpo or {})
         hp = _GrpoHyperParams()
@@ -201,10 +207,15 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         return hp
 
     def unload_reward_model(self) -> None:
-        if hasattr(self._reward_model, "unload"):
+        if self._reward_model is not None and hasattr(self._reward_model, "unload"):
             self._reward_model.unload(clear_cuda_cache=True)
 
     def _extract_reward_metrics(self, batch_size: int) -> Dict[str, torch.Tensor]:
+        """
+        对 reward_model 的 get_last_metric() 返回值做检查, 确保是一维 tensor
+        """
+        if self._reward_model is None:
+            return {}
         if not hasattr(self._reward_model, "get_last_metrics"):
             return {}
 
@@ -252,6 +263,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         Annotation:
         - This matches the common GRPO setup: one prompt rolled out multiple times to compute group-normalized advantage.
         - We only repeat tensor entries whose first dimension matches batch size.
+        - `B0` denotes the incoming dataloader batch size; after repeat, `B = B0 * num_generations`.
         """
 
         if num_generations <= 1:
@@ -267,7 +279,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         out: Dict[str, torch.Tensor] = {}
         for k, v in data_batch.items():
             if torch.is_tensor(v) and v.ndim > 0 and v.shape[0] == b0:
-                # shape: [B, ...] -> [B * num_generations, ...]
+                # shape: [B0, ...] -> [B0 * num_generations, ...] = [B, ...]
                 out[k] = v.repeat_interleave(num_generations, dim=0)
             else:
                 out[k] = v
@@ -293,10 +305,10 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             # Group by contiguous chunks of size num_generations
             assert rewards_f.shape[0] % hp.num_generations == 0, "Batch size must be divisible by num_generations."
             n_groups = rewards_f.shape[0] // hp.num_generations
-            rewards_g = rewards_f.view(n_groups, hp.num_generations)  # shape: [B] -> [G, K]
-            mean = rewards_g.mean(dim=1, keepdim=True)  # shape: [G, K] -> [G, 1]
-            std = rewards_g.std(dim=1, keepdim=True).clamp_min(1e-8)  # shape: [G, K] -> [G, 1]
-            adv = ((rewards_g - mean) / std).view_as(rewards_f)  # shape: [G, K] -> [B]
+            rewards_g = rewards_f.view(n_groups, hp.num_generations)  # shape: [B] -> [B0, G]
+            mean = rewards_g.mean(dim=1, keepdim=True)  # shape: [B0, G] -> [B0, 1]
+            std = rewards_g.std(dim=1, keepdim=True).clamp_min(1e-8)  # shape: [B0, G] -> [B0, 1]
+            adv = ((rewards_g - mean) / std).view_as(rewards_f)  # shape: [B0, G] -> [B]
         else:
             # Global normalization across data-parallel ranks
             dp_group = _get_data_parallel_group_with_cp()
@@ -417,7 +429,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             data_batch["t5_text_mask"] = torch.ones(
                 text_embeddings.shape[0], text_embeddings.shape[1], device=self.tensor_kwargs["device"])
 
-        data_batch = self._maybe_repeat_batch_for_group(data_batch, hp.num_generations)
+        data_batch = self._maybe_repeat_batch_for_group(data_batch, hp.num_generations)  # B = B0 * G
         # IMPORTANT: avoid dtype mismatch inside action embedder (Linear) during rollout
         self._ensure_action_dtype_inplace(data_batch)
         # IMPORTANT: avoid padding_mask upcasting latents to float32 inside backbone
@@ -425,8 +437,19 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
 
         is_image_batch = self.is_image_batch(data_batch)
         input_key = self.input_image_key if is_image_batch else self.input_data_key
-        b = data_batch[input_key].shape[0]
+        b = data_batch[input_key].shape[0]  # B = B0 * G
         _T, _H, _W = data_batch[input_key].shape[-3:]
+        
+        # 把第一帧之后的帧置为 0（归一化后应为 -1），避免干扰 latent 的第一帧
+        # 虽然事实上应该不会干扰，一方面因为 latetn 根本没有压缩时间维，另一方面是所采用的 VAE encoder 的性质，它会特殊处理第一帧
+        rollout_data_batch = data_batch
+        if not is_image_batch and _T > 1:
+            rollout_data_batch = dict(data_batch)
+            video = data_batch[input_key]
+            rollout_data_batch[input_key] = torch.cat(
+                [video[:, :, :1], torch.full_like(video[:, :, 1:], -1.0)], dim=2
+            ).contiguous()
+            rollout_data_batch["num_conditional_frames"] = 1
         state_shape = (
             self.config.state_ch,
             self.tokenizer.get_latent_num_frames(_T),
@@ -445,14 +468,14 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         # 以提高训练稳定性（参考 action/tmp/train_grpo_flux.py 的 `--init_same_noise`）。
         if bool(hp.init_same_noise) and int(hp.num_generations) > 1:
             assert b % int(hp.num_generations) == 0, "Batch size must be divisible by num_generations."
-            n_groups = b // int(hp.num_generations)
+            n_groups = b // int(hp.num_generations)  # B0
             base_noise = torch.randn(
                 (n_groups,) + state_shape,
                 device=self.tensor_kwargs["device"],
                 dtype=self.tensor_kwargs["dtype"],
                 generator=generator,
             )
-            # shape: [G, ...] -> [G*K, ...]，使每组 K 个样本共享同一份 noise
+            # shape: [B0, ...] -> [B0*G, ...] = [B, ...]，使每组 G 个样本共享同一份 noise
             init_noise = base_noise.repeat_interleave(int(hp.num_generations), dim=0)
         else:
             init_noise = torch.randn(
@@ -464,7 +487,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
 
         # IMPORTANT: fixed conditioning across updates
         velocity_fn = self.get_velocity_fn_from_batch(
-            data_batch, guidance=float(hp.guidance), is_negative_prompt=False
+            rollout_data_batch, guidance=float(hp.guidance), is_negative_prompt=False
         )
 
         # UniPC schedule (single source of truth)
@@ -503,10 +526,10 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             t_B_1 = torch.stack([t_tok]).unsqueeze(0)  # [1,1]
             t_B_1 = t_B_1.repeat(b, 1)
             # print(f"dtype of init_noise: {init_noise.dtype}, dtype of latents: {latents.dtype}, dtype of t_B_1: {t_B_1.dtype}")
-            v_pred = velocity_fn(init_noise_local, latents, t_B_1)
+            v_pred = velocity_fn(init_noise_local, latents, t_B_1)  # [B, C, T, H, W]
             # print("pass 1 time")
 
-            eps = torch.randn(latents.shape, dtype=torch.float32, device=latents.device, generator=generator)
+            eps = torch.randn(latents.shape, dtype=torch.float32, device=latents.device, generator=generator)  # [B,C,T,H,W]
             step_out = grpo_sde_step(
                 latents=latents,
                 velocity=v_pred,
@@ -514,6 +537,8 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
                 sigma_next=sigma_next,
                 eta=float(hp.eta),
                 noise=eps,
+                sigma_max=sigmas[1],
+                sigma_dependent_eta=bool(hp.sigma_dependent_eta),
                 fixed_next_latents=None,
             )
 
@@ -544,6 +569,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
         # NOTE: `decode()` is inherited from Text2WorldModelRectifiedFlow and is torch.no_grad safe.
         pred_video_pixels = self.decode(final_latents.to(torch.float32))
 
+        assert self._reward_model is not None
         rewards = self._reward_model(
             RewardInput(
                 # Prefer pixels for reward (SSIM uses pixels; dummy doesn't care).
@@ -631,7 +657,7 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
             # Model expects timesteps_B_T, so shape [B, 1] is preferred (supports per-sample tokens)
             t_B_1 = t_tok_b.view(B, 1)  # [B,1]
 
-            v_pred = samples.velocity_fn(samples.init_noise, latents_i[:, j], t_B_1)
+            v_pred = samples.velocity_fn(samples.init_noise, latents_i[:, j], t_B_1)  # [B, C, T, H, W]
             step_out = grpo_sde_step(
                 latents=latents_i[:, j],
                 velocity=v_pred,
@@ -639,12 +665,14 @@ class ActionVideo2WorldModelRectifiedFlowGRPO(ActionVideo2WorldModelRectifiedFlo
                 sigma_next=sigma_next_b,
                 eta=float(hp.eta),
                 noise=torch.zeros_like(latents_i[:, j]),
+                sigma_max=samples.sigmas[1],
+                sigma_dependent_eta=bool(hp.sigma_dependent_eta),
                 fixed_next_latents=next_latents_i[:, j],
             )
-            new_log_probs_list.append(step_out.log_prob.to(torch.float32))  # 每次 append 一列 [B, 1]
+            new_log_probs_list.append(step_out.log_prob.to(torch.float32))  # each entry: [B]
 
         new_log_probs = torch.stack(new_log_probs_list, dim=1)  # 按 dim=1 进行 stack，size 为 [B,train_T]
-        ratio = torch.exp(new_log_probs - old_log_probs_i)
+        ratio = torch.exp(new_log_probs - old_log_probs_i)  # [B, train_T]
         adv = samples.advantages.to(torch.float32).unsqueeze(1).expand_as(ratio)
 
         unclipped = -adv * ratio

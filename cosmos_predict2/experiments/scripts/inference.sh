@@ -1,4 +1,4 @@
-CHECKPOINT_DIR="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned_grpo/OF2/2b_bridge_action_conditioned_grpo_optical_flow/checkpoints/iter_000001000"
+CHECKPOINT_DIR="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned_grpo/mixed_reward_0.7of_0.3vjepa/2b_bridge_action_conditioned_grpo_mixed_reward/checkpoints/iter_000001000"
 experiment="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_optical_flow"
 MODEL="model.pt" # model.pt | model_ema_bf16.pt | model_ema_fp32.pt
 num_steps=20
