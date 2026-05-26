@@ -7,8 +7,17 @@ python /inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/assets/action_con
   --output_dir ${DIR_A}/compare \
   --fps 3 \
   --overwrite
+
+# When dir_c is omitted or empty, videos in dir_a and dir_b are vertically concatenated.
+python /inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/assets/action_conditioned/basic/concate_videos.py \
+  --dir_a $DIR_A \
+  --dir_b /path/to/dir_b \
+  --output_dir ${DIR_A}/compare_ab \
+  --fps 3 \
+  --overwrite
 """
-# a: left top; b: right top; c: bottom
+# three-input mode: a: left top; b: right top; c: bottom
+# two-input mode: a: top; b: bottom
 
 import argparse
 import subprocess
@@ -256,12 +265,136 @@ def concat_three_videos_h264(
         temp_output_path.unlink()
 
 
+def concat_two_videos_to_temp(
+    path_a: Path,
+    path_b: Path,
+    temp_output_path: Path,
+    output_fps: float,
+):
+    """
+    用 OpenCV 生成 A/B 纵向拼接的临时视频。
+
+    双路模式要求 A 和 B 的帧数、宽、高完全一致，不做缩放。
+    """
+    cap_a = cv2.VideoCapture(str(path_a))
+    cap_b = cv2.VideoCapture(str(path_b))
+
+    writer = None
+
+    try:
+        frames_a, width_a, height_a = get_video_info(cap_a, path_a)
+        frames_b, width_b, height_b = get_video_info(cap_b, path_b)
+
+        if frames_a != frames_b:
+            raise ValueError(
+                f"Frame count mismatch between A and B for {path_a}: "
+                f"A={frames_a}, B={frames_b}"
+            )
+
+        if width_a != width_b or height_a != height_b:
+            raise ValueError(
+                f"Size mismatch between A and B for {path_a}: "
+                f"A=({width_a}, {height_a}), B=({width_b}, {height_b})"
+            )
+
+        output_width = width_a
+        output_height = height_a + height_b
+
+        temp_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(
+            str(temp_output_path),
+            fourcc,
+            output_fps,
+            (output_width, output_height),
+        )
+
+        if not writer.isOpened():
+            raise RuntimeError(f"Failed to create temp video: {temp_output_path}")
+
+        for idx in range(frames_a):
+            ret_a, frame_a = cap_a.read()
+            ret_b, frame_b = cap_b.read()
+
+            if not (ret_a and ret_b):
+                raise RuntimeError(
+                    f"Failed to read frame {idx} from one of the videos: "
+                    f"{path_a}"
+                )
+
+            if frame_a.shape[1] != width_a or frame_a.shape[0] != height_a:
+                raise RuntimeError(
+                    f"Decoded frame size mismatch in A at frame {idx} for {path_a}: "
+                    f"expected=({width_a}, {height_a}), "
+                    f"got=({frame_a.shape[1]}, {frame_a.shape[0]})"
+                )
+
+            if frame_b.shape[1] != width_b or frame_b.shape[0] != height_b:
+                raise RuntimeError(
+                    f"Decoded frame size mismatch in B at frame {idx} for {path_b}: "
+                    f"expected=({width_b}, {height_b}), "
+                    f"got=({frame_b.shape[1]}, {frame_b.shape[0]})"
+                )
+
+            final_frame = cv2.vconcat([frame_a, frame_b])
+            writer.write(final_frame)
+
+    finally:
+        cap_a.release()
+        cap_b.release()
+
+        if writer is not None:
+            writer.release()
+
+
+def concat_two_videos_h264(
+    path_a: Path,
+    path_b: Path,
+    output_path: Path,
+    output_fps: float,
+    overwrite: bool,
+    keep_temp: bool = False,
+):
+    """
+    对外使用的双路拼接主函数：
+    1. OpenCV 写临时视频
+    2. ffmpeg 转码为 H.264
+    3. 删除临时视频
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    temp_output_path = output_path.with_name(
+        output_path.stem + ".tmp" + output_path.suffix
+    )
+
+    if temp_output_path.exists():
+        temp_output_path.unlink()
+
+    concat_two_videos_to_temp(
+        path_a=path_a,
+        path_b=path_b,
+        temp_output_path=temp_output_path,
+        output_fps=output_fps,
+    )
+
+    run_ffmpeg_h264_transcode(
+        input_path=temp_output_path,
+        output_path=output_path,
+        fps=output_fps,
+        overwrite=overwrite,
+    )
+
+    if not keep_temp and temp_output_path.exists():
+        temp_output_path.unlink()
+
+
 def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--dir_a", type=str, required=True)
     parser.add_argument("--dir_b", type=str, required=True)
-    parser.add_argument("--dir_c", type=str, required=True)
+    parser.add_argument("--dir_c", type=str, nargs="?", default=None, const=None)
     parser.add_argument("--output_dir", type=str, required=True)
 
     parser.add_argument(
@@ -287,39 +420,67 @@ def main():
 
     dir_a = Path(args.dir_a)
     dir_b = Path(args.dir_b)
-    dir_c = Path(args.dir_c)
+    dir_c = Path(args.dir_c) if args.dir_c else None
     output_dir = Path(args.output_dir)
 
     videos_a = list_videos_recursive(dir_a)
     videos_b = list_videos_recursive(dir_b)
-    videos_c = list_videos_recursive(dir_c)
 
-    common_names = sorted(
-        set(videos_a.keys()) & set(videos_b.keys()) & set(videos_c.keys())
-    )
+    if dir_c is None:
+        videos_c = None
+        common_names = sorted(set(videos_a.keys()) & set(videos_b.keys()))
 
-    if not common_names:
-        raise RuntimeError("No common video relative paths found in A, B, C directories.")
+        if not common_names:
+            raise RuntimeError("No common video relative paths found in A, B directories.")
 
-    missing_in_a = (set(videos_b.keys()) | set(videos_c.keys())) - set(videos_a.keys())
-    missing_in_b = (set(videos_a.keys()) | set(videos_c.keys())) - set(videos_b.keys())
-    missing_in_c = (set(videos_a.keys()) | set(videos_b.keys())) - set(videos_c.keys())
+        missing_in_a = set(videos_b.keys()) - set(videos_a.keys())
+        missing_in_b = set(videos_a.keys()) - set(videos_b.keys())
 
-    if missing_in_a or missing_in_b or missing_in_c:
-        print("[Warning] Some videos are not shared by all three directories.")
-        if missing_in_a:
-            print(f"Missing in A: {[str(x) for x in sorted(missing_in_a)]}")
-        if missing_in_b:
-            print(f"Missing in B: {[str(x) for x in sorted(missing_in_b)]}")
-        if missing_in_c:
-            print(f"Missing in C: {[str(x) for x in sorted(missing_in_c)]}")
+        if missing_in_a or missing_in_b:
+            print("[Warning] Some videos are not shared by both directories.")
+            if missing_in_a:
+                print(f"Missing in A: {[str(x) for x in sorted(missing_in_a)]}")
+            if missing_in_b:
+                print(f"Missing in B: {[str(x) for x in sorted(missing_in_b)]}")
+
+        print("Running in two-input mode: vertically concatenate A and B.")
+    else:
+        videos_c = list_videos_recursive(dir_c)
+        common_names = sorted(
+            set(videos_a.keys()) & set(videos_b.keys()) & set(videos_c.keys())
+        )
+
+        if not common_names:
+            raise RuntimeError(
+                "No common video relative paths found in A, B, C directories."
+            )
+
+        missing_in_a = (
+            set(videos_b.keys()) | set(videos_c.keys())
+        ) - set(videos_a.keys())
+        missing_in_b = (
+            set(videos_a.keys()) | set(videos_c.keys())
+        ) - set(videos_b.keys())
+        missing_in_c = (
+            set(videos_a.keys()) | set(videos_b.keys())
+        ) - set(videos_c.keys())
+
+        if missing_in_a or missing_in_b or missing_in_c:
+            print("[Warning] Some videos are not shared by all three directories.")
+            if missing_in_a:
+                print(f"Missing in A: {[str(x) for x in sorted(missing_in_a)]}")
+            if missing_in_b:
+                print(f"Missing in B: {[str(x) for x in sorted(missing_in_b)]}")
+            if missing_in_c:
+                print(f"Missing in C: {[str(x) for x in sorted(missing_in_c)]}")
+
+        print("Running in three-input mode: concatenate A/B on top and C on bottom.")
 
     print(f"Found {len(common_names)} common videos.")
 
     for rel_path in common_names:
         path_a = videos_a[rel_path]
         path_b = videos_b[rel_path]
-        path_c = videos_c[rel_path]
 
         # 保留相对目录结构输出
         output_path = output_dir / rel_path
@@ -333,15 +494,27 @@ def main():
 
         print(f"[Processing] {rel_path}")
 
-        concat_three_videos_h264(
-            path_a=path_a,
-            path_b=path_b,
-            path_c=path_c,
-            output_path=output_path,
-            output_fps=args.fps,
-            overwrite=args.overwrite,
-            keep_temp=args.keep_temp,
-        )
+        if videos_c is None:
+            concat_two_videos_h264(
+                path_a=path_a,
+                path_b=path_b,
+                output_path=output_path,
+                output_fps=args.fps,
+                overwrite=args.overwrite,
+                keep_temp=args.keep_temp,
+            )
+        else:
+            path_c = videos_c[rel_path]
+
+            concat_three_videos_h264(
+                path_a=path_a,
+                path_b=path_b,
+                path_c=path_c,
+                output_path=output_path,
+                output_fps=args.fps,
+                overwrite=args.overwrite,
+                keep_temp=args.keep_temp,
+            )
 
         print(f"[Done] {output_path}")
 

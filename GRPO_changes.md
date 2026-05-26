@@ -19,7 +19,7 @@
 - `cosmos_predict2/experiments/scripts`: 一些训练和推理的 bash 脚本
 - `assets/action_conditioned/basic/concate_videos.py`: 拼接视频进行可视化对比
 - `cosmos_predict2/_src/predict2/action/callbacks/rollout_reward_validation.py`: 添加了一个验证 callback 函数
-- 
+- `cosmos_predict2/_src/predict2/action/eval`: eval 代码
 
 ## 修改文件
 - `cosmos_predict2/_src/predict2/action/configs/action_conditioned/model.py`
@@ -41,3 +41,7 @@
 
 - 其他
   - `co-tracker/cotracker/models/core/cotracker/cotracker3_offline.py`, L141 .view() -> .reshape()
+
+- Evaluation:
+  - `/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/cosmos_predict2/_src/predict2/action/eval` 目录
+  - `/cosmos-zyq/cosmos_predict2/action_conditioned_config.py`, L109, 添加 eval_reverse_action_num_chunks 参数

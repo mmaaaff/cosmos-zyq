@@ -414,9 +414,16 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_optical_flow = LazyDict(
             "_self_",
         ],
         job=dict(
-            group="OF2",
+            group="OF_5steps",
             name="2b_bridge_action_conditioned_grpo_optical_flow",
         ),
+        model=dict(
+            config=dict(
+                grpo=dict(
+                    num_steps=5
+                )
+            )
+        )
     ),
     flags={"allow_objects": True},
 )
@@ -478,7 +485,7 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_mixed_reward = LazyDict(
             "_self_",
         ],
         job=dict(
-            group ="mixed_reward_0.7of_0.3vjepa",
+            group ="mixed_reward_0.7of_0.3vjepa1",
             name="2b_bridge_action_conditioned_grpo_mixed_reward",
         ),
         model=dict(

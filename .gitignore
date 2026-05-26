@@ -200,6 +200,7 @@ cython_debug/
 /cosmos_predict2/datasets/
 /output/
 /outputs/
+/outputs_eval/
 /results/
 /tmp/
 /ckpt/
@@ -207,6 +208,8 @@ cython_debug/
 !assets/**/*.png
 !assets/**/*.jpg
 !assets/**/*.mp4
+assets/action_conditioned/basic/bridge1
+assets/action_conditioned/basic/bridge2
 
 .sii
 vjepa2/

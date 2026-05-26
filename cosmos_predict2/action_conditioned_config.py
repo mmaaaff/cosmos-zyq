@@ -106,6 +106,8 @@ class ActionConditionedInferenceArguments(CommonInferenceArguments):
     """Whether to use quaternion representation for rotations."""
     action_load_fn: str = "cosmos_predict2.action_conditioned.load_default_action_fn"
     """A callable that constructs a function which loads action information for a given data sample."""
+    eval_reverse_action_num_chunks: int = 0
+    """If > 0, eval loaders can build a forward-then-reverse action sequence from the first N chunks."""
 
 
 ActionConditionedInferenceOverrides = get_overrides_cls(ActionConditionedInferenceArguments, exclude=["name"])

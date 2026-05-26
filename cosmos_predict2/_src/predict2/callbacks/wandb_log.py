@@ -196,6 +196,10 @@ class WandbCallback(Callback):
                     v = output_batch.get(k, None)
                     if torch.is_tensor(v) and v.ndim == 0:
                         info[f"train{self.wandb_extra_tag}/{k}"] = v.detach().float().item()
+                extra_scalar_prefixes = ("reward_component_", "adv_component_")
+                for k, v in output_batch.items():
+                    if k.startswith(extra_scalar_prefixes) and torch.is_tensor(v) and v.ndim == 0:
+                        info[f"train{self.wandb_extra_tag}/{k}"] = v.detach().float().item()
                 # ------------------------------------------------------------------------------------------------
 
                 if self.save_s3:
