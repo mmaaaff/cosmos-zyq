@@ -1,9 +1,26 @@
-CHECKPOINT_DIR="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned_grpo/OF2/2b_bridge_action_conditioned_grpo_optical_flow/checkpoints/iter_000001500"
-experiment="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_optical_flow"
+# CHECKPOINT_DIR="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned/cosmos_predict_v2p5/2b_bridge_action_conditioned/checkpoints/iter_000150000"
+# CHECKPOINT_DIR="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned_grpo/OF2/2b_bridge_action_conditioned_grpo_optical_flow/checkpoints/iter_000001500"
+# CHECKPOINT_DIR="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned_grpo/cotracker_4/2b_bridge_action_conditioned_grpo_cotracker/checkpoints/iter_000001500"
+# CHECKPOINT_DIR="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned_grpo/cotracker_tau=0/2b_bridge_action_conditioned_grpo_cotracker/checkpoints/iter_000001500"
+# CHECKPOINT_DIR="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned_grpo/vjepa2/2b_bridge_action_conditioned_grpo_vjepa/checkpoints/iter_000001500"
+# CHECKPOINT_DIR="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned_grpo/opd_fixed_teacher_kl_grad/2b_bridge_action_conditioned_grpo_opd_fixed_teacher/checkpoints/iter_000001000"
+CHECKPOINT_DIR="/inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/cosmos_predict2_action_conditioned_grpo/mixed_reward_0.7of_0.3vjepa1/2b_bridge_action_conditioned_grpo_mixed_reward/checkpoints/iter_000000900"
+
+# CHECKPOINT_DIR="output/cosmos_predict2_action_conditioned_grpo/OF2/2b_bridge_action_conditioned_grpo_optical_flow/checkpoints/iter_000001000"
+
+# experiment="ac_reason_embeddings_rectified_flow_2b_256_320"
+# experiment="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_optical_flow"
+# experiment="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker"
+# experiment="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker"
+# experiment="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_vjepa"
+# experiment="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_opd_fixed_teacher"
+experiment="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_mixed_reward"
+
+
 MODEL="model.pt" # model.pt | model_ema_bf16.pt | model_ema_fp32.pt
 num_steps=20
 GPU_ID=0
-save_dir="outputs"
+save_dir="outputs_eval"
 
 if [[ "$CHECKPOINT_DIR" =~ cosmos_predict2_action_conditioned(_grpo)?/([^/]+)/.*/checkpoints/iter_([0-9]+)$ ]]; then
     group="${BASH_REMATCH[2]}"
@@ -36,10 +53,10 @@ CUDA_VISIBLE_DEVICES="$GPU_ID" python examples/action_conditioned.py \
     --num-steps "$num_steps" \
     --save-fps 3
 
-python /inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/assets/action_conditioned/basic/concate_videos.py \
-  --dir_a $SAVE_ROOT \
-  --dir_b /inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/outputs/action_conditioned/basic/original/iter_000150000_model_ema_fp32.pt \
-  --dir_c /inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/outputs/action_conditioned/basic/gt \
-  --output_dir ${SAVE_ROOT}/compare \
-  --fps 3 \
-  --overwrite
+# python /inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/assets/action_conditioned/basic/concate_videos.py \
+#   --dir_a $SAVE_ROOT \
+#   --dir_b /inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/outputs/action_conditioned/basic/original/iter_000150000_model_ema_fp32.pt \
+#   --dir_c /inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/outputs/action_conditioned/basic/gt \
+#   --output_dir ${SAVE_ROOT}/compare \
+#   --fps 3 \
+#   --overwrite

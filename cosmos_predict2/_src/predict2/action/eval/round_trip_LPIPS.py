@@ -1,7 +1,7 @@
 """
 Compute round-trip LPIPS between the first and last frame of MP4 videos.
 
-python cosmos_predict2/_src/predict2/action/eval/round_trip_LPIPS.py /inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/outputs_eval/action_conditioned/basic/vjepa2/000001500/20/2_chunks/model
+python cosmos_predict2/_src/predict2/action/eval/round_trip_LPIPS.py outputs_eval/action_conditioned/basic/mixed_reward_0.7of_0.3vjepa1/000000900/20/3_chunks/model
 """
 
 from __future__ import annotations

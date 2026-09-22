@@ -302,64 +302,8 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base = LazyDict(
     flags={"allow_objects": True},
 )
 
-multichunk_rollout_chunks = 2
-multichunk_action_chunk_size = 12
-ac_reason_embeddings_rectified_flow_2b_256_320_multichunk_grpo_base = LazyDict(
-    dict(
-        defaults=[
-            {"/experiment/grpo_base": "ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base"},
-            {"override /model": "action_conditioned_video2world_fsdp_rectified_flow_multichunk_grpo"},
-            "_self_",
-        ],
-        job=dict(
-            group="multichunk_grpo",
-            name="2b_bridge_action_conditioned_multichunk_grpo_base",
-        ),
-        model=dict(
-            config=dict(
-                # Keep the model native chunk fixed at 12 actions.
-                state_t=1 + multichunk_action_chunk_size // 4,
-                net=dict(
-                    num_action_per_chunk=multichunk_action_chunk_size,
-                ),
-                grpo=dict(
-                    num_rollout_chunks=multichunk_rollout_chunks,
-                    action_chunk_size=multichunk_action_chunk_size,
-                ),
-            ),
-        ),
-        dataloader_train=dict(
-            sampler=dict(
-                dataset=dict(num_action_per_chunk=multichunk_rollout_chunks * multichunk_action_chunk_size),
-            ),
-            dataset=dict(num_action_per_chunk=multichunk_rollout_chunks * multichunk_action_chunk_size),
-        ),
-        dataloader_val=dict(
-            sampler=dict(
-                dataset=dict(num_action_per_chunk=multichunk_rollout_chunks * multichunk_action_chunk_size),
-            ),
-            dataset=dict(num_action_per_chunk=multichunk_rollout_chunks * multichunk_action_chunk_size),
-        ),
-    ),
-    flags={"allow_objects": True},
-)
 
-
-ac_reason_embeddings_rectified_flow_2b_256_320_multichunk_grpo_ssim = LazyDict(
-    dict(
-        defaults=[
-            {"/experiment/grpo_base": "ac_reason_embeddings_rectified_flow_2b_256_320_multichunk_grpo_base"},
-            {"override /reward": "ssim"},
-            "_self_",
-        ],
-        job=dict(
-            group="multichunk_grpo",
-            name="2b_bridge_action_conditioned_multichunk_grpo_ssim",
-        ),
-    ),
-    flags={"allow_objects": True},
-)
-
+# single chunk ---------------------------------------------------------------------------------------------------------------
 
 """
 torchrun --nproc_per_node=4 --master_port=12341 -m scripts.train \
@@ -384,6 +328,14 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_ssim = LazyDict(
     flags={"allow_objects": True},
 )
 
+
+"""
+torchrun --nproc_per_node=4 --master_port=12341 -m scripts.train \
+    --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config_grpo.py  \
+    -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320_grpo_vjepa ~dataloader_train.dataloaders \
+    job.wandb_mode=offline \
+    2>&1 | tee /inspire/qb-ilm/project/robot3d/czxs25210241/cosmos-zyq/output/train_vjepa.log
+"""
 ac_reason_embeddings_rectified_flow_2b_256_320_grpo_vjepa = LazyDict(
     dict(
         defaults=[
@@ -515,6 +467,106 @@ ac_reason_embeddings_rectified_flow_2b_256_320_grpo_mixed_reward = LazyDict(
     flags={"allow_objects": True},
 )
 
+# Multi-Chunk ---------------------------------------------------------------------------------------------------------------
+multichunk_rollout_chunks = 2
+multichunk_action_chunk_size = 12
+ac_reason_embeddings_rectified_flow_2b_256_320_grpo_multichunk = LazyDict(
+    dict(
+        defaults=[
+            {"/experiment/grpo_base": "ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base"},
+            {"override /model": "action_conditioned_video2world_fsdp_rectified_flow_multichunk_grpo"},
+            "_self_",
+        ],
+        job=dict(
+            group="multichunk_grpo",
+            name="2b_bridge_action_conditioned_multichunk_grpo_base",
+        ),
+        trainer=dict(
+            callbacks=dict(
+                every_n_sample_reg=dict(
+                    every_n=10000,
+                ),
+                every_n_sample_ema=dict(
+                    every_n=10000,
+                ),
+            ),
+        ),
+        model=dict(
+            config=dict(
+                # Keep the model native chunk fixed at 12 actions.
+                state_t=1 + multichunk_action_chunk_size // 4,
+                net=dict(
+                    num_action_per_chunk=multichunk_action_chunk_size,
+                ),
+                grpo=dict(
+                    num_rollout_chunks=multichunk_rollout_chunks,
+                    action_chunk_size=multichunk_action_chunk_size,
+                    num_updates=2,
+                ),
+            ),
+        ),
+        dataloader_train=dict(
+            sampler=dict(
+                dataset=dict(num_action_per_chunk=multichunk_rollout_chunks * multichunk_action_chunk_size),
+            ),
+            dataset=dict(num_action_per_chunk=multichunk_rollout_chunks * multichunk_action_chunk_size),
+        ),
+        dataloader_val=dict(
+            sampler=dict(
+                dataset=dict(num_action_per_chunk=multichunk_rollout_chunks * multichunk_action_chunk_size),
+            ),
+            dataset=dict(num_action_per_chunk=multichunk_rollout_chunks * multichunk_action_chunk_size),
+        ),
+    ),
+    flags={"allow_objects": True},
+)
+
+
+ac_reason_embeddings_rectified_flow_2b_256_320_grpo_multichunk_ssim = LazyDict(
+    dict(
+        defaults=[
+            {"/experiment/grpo_multichunk": "ac_reason_embeddings_rectified_flow_2b_256_320_grpo_multichunk"},
+            {"override /reward": "ssim"},
+            "_self_",
+        ],
+        job=dict(
+            group="multichunk_grpo",
+            name="2b_bridge_action_conditioned_multichunk_grpo_ssim",
+        ),
+    ),
+    flags={"allow_objects": True},
+)
+
+"""
+torchrun --nproc_per_node=1 --master_port=12341 -m scripts.train \
+    --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config_grpo.py  \
+    -- experiment=ac_reason_embeddings_rectified_flow_2b_256_320_grpo_multichunk_optical_flow ~dataloader_train.dataloaders \
+    job.wandb_mode=offline
+"""
+ac_reason_embeddings_rectified_flow_2b_256_320_grpo_multichunk_optical_flow = LazyDict(
+    dict(
+        defaults=[
+            {"/experiment/grpo_multichunk": "ac_reason_embeddings_rectified_flow_2b_256_320_grpo_multichunk"},
+            {"override /reward": "optical_flow"},
+            "_self_",
+        ],
+        job=dict(
+            group="of_multichunk",
+            name="2b_bridge_action_conditioned_multichunk_grpo_optical_flow",
+        ),
+        model=dict(
+            config=dict(
+                grpo=dict(
+                    num_steps=16,
+                )
+            )
+        )
+    ),
+    flags={"allow_objects": True},
+)
+
+# OPD ---------------------------------------------------------------------------------------------------------------
+
 """
 torchrun --nproc_per_node=1 --master_port=12341 -m scripts.train \
     --config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config_grpo.py  \
@@ -556,20 +608,21 @@ cs.store(
     node=ac_reason_embeddings_rectified_flow_2b_256_320_grpo_base,
 )
 cs.store(
-    group="experiment/grpo_base",
+    group="experiment/grpo_multichunk",
     package="_global_",
-    name="ac_reason_embeddings_rectified_flow_2b_256_320_multichunk_grpo_base",
-    node=ac_reason_embeddings_rectified_flow_2b_256_320_multichunk_grpo_base,
+    name="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_multichunk",
+    node=ac_reason_embeddings_rectified_flow_2b_256_320_grpo_multichunk,
 )
 
 for _item in [
     ac_reason_embeddings_rectified_flow_2b_256_320,
     ac_reason_embeddings_rectified_flow_2b_256_320_grpo_ssim,
-    ac_reason_embeddings_rectified_flow_2b_256_320_multichunk_grpo_ssim,
     ac_reason_embeddings_rectified_flow_2b_256_320_grpo_vjepa,
     ac_reason_embeddings_rectified_flow_2b_256_320_grpo_optical_flow,
     ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker,
     ac_reason_embeddings_rectified_flow_2b_256_320_grpo_mixed_reward,
+    ac_reason_embeddings_rectified_flow_2b_256_320_grpo_multichunk_ssim,
+    ac_reason_embeddings_rectified_flow_2b_256_320_grpo_multichunk_optical_flow,
     ac_reason_embeddings_rectified_flow_2b_256_320_grpo_opd_fixed_teacher,
 ]:
     # Get the experiment name from the global variable

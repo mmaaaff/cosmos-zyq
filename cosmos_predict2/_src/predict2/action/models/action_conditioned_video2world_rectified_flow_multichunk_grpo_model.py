@@ -344,7 +344,7 @@ class ActionVideo2WorldModelRectifiedFlowMultiChunkGRPO(ActionVideo2WorldModelRe
                 final_latents = cat_outputs_cp(final_latents, seq_dim=2, cp_group=self.get_context_parallel_group())  # [B, C, T_lat, H_lat, W_lat], B=B0*G
             pred_video_pixels = self.decode(final_latents.to(torch.float32)).detach()  # [B, C, 1+A, H, W], B=B0*G
             pred_video_chunks.append(pred_video_pixels)  # list[K] of [B, C, 1+A, H, W], B=B0*G
-            condition_frame = pred_video_pixels[:, :, -1:].detach()  # [B, C, 1, H, W], B=B0*G
+            condition_frame = pred_video_pixels[:, :, -1:].clamp(-1.0, 1.0).detach()  # [B, C, 1, H, W], B=B0*G  # 这是因为 decode 出来的数值不严格在 [-1, 1] 之间，不 clamp 后续会出错。在推理代码 action_conditioned.py 中也有 clamp
 
         pred_full_video = torch.cat(  # [B, C, 1+K*A, H, W], B=B0*G
             [pred_video_chunks[0]] + [chunk[:, :, 1:] for chunk in pred_video_chunks[1:]],

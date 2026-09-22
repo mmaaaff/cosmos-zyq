@@ -2,13 +2,16 @@
 # CHECKPOINT_DIR="output/cosmos_predict2_action_conditioned_grpo/OF2/2b_bridge_action_conditioned_grpo_optical_flow/checkpoints/iter_000001500"
 # CHECKPOINT_DIR="output/cosmos_predict2_action_conditioned_grpo/vjepa2/2b_bridge_action_conditioned_grpo_vjepa/checkpoints/iter_000001500"
 # CHECKPOINT_DIR="output/cosmos_predict2_action_conditioned_grpo/cotracker_4/2b_bridge_action_conditioned_grpo_cotracker/checkpoints/iter_000001500"
-CHECKPOINT_DIR="output/cosmos_predict2_action_conditioned_grpo/cotracker_tau=0/2b_bridge_action_conditioned_grpo_cotracker/checkpoints/iter_000001500"
+# CHECKPOINT_DIR="output/cosmos_predict2_action_conditioned_grpo/cotracker_tau=0/2b_bridge_action_conditioned_grpo_cotracker/checkpoints/iter_000001500"
+CHECKPOINT_DIR="output/cosmos_predict2_action_conditioned_grpo/mixed_reward_0.7of_0.3vjepa1/2b_bridge_action_conditioned_grpo_mixed_reward/checkpoints/iter_000000900"
+
 
 # experiment="ac_reason_embeddings_rectified_flow_2b_256_320"
 # experiment="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_optical_flow"
 # experiment="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_vjepa"
 # experiment="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker"
-experiment="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker"
+# experiment="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_cotracker"
+experiment="ac_reason_embeddings_rectified_flow_2b_256_320_grpo_mixed_reward"
 
 MODEL="model.pt" # model.pt | model_ema_bf16.pt | model_ema_fp32.pt
 num_steps=20
